@@ -121,6 +121,21 @@ vout_LTLIBRARIES += libglconv_vdpau_plugin.la
 endif
 endif # HAVE_GL
 
+### Vulkan ###
+
+VULKAN_COMMONSOURCES = video_output/vulkan/instance_helper.c
+
+VULKAN_COMMONCLFAGS = $(VULKAN_CFLAGS) $(LIBPLACEBO_CFLAGS)
+VULKAN_COMMONLIBS = $(VULKAN_LIBS) $(LIBPLACEBO_LIBS)
+
+libvk_plugin_la_SOURCES = $(VULKAN_COMMONSOURCES) video_output/vulkan/display.c
+libvk_plugin_la_CFLAGS = $(AM_CFLAGS) $(VULKAN_COMMONCFLAGS)
+libvk_plugin_la_LIBADD = $(VULKAN_COMMONLIBS)
+
+if HAVE_VULKAN
+vout_LTLIBRARIES += libvk_plugin.la
+endif
+
 ### XCB ###
 libvlc_xcb_events_la_SOURCES = \
 	video_output/xcb/events.c video_output/xcb/events.h
@@ -164,6 +179,10 @@ libglx_plugin_la_SOURCES = video_output/glx.c
 libglx_plugin_la_CFLAGS = $(AM_CFLAGS) $(GL_CFLAGS)
 libglx_plugin_la_LIBADD = $(GL_LIBS) $(X_LIBS) $(X_PRE_LIBS) -lX11
 
+libvk_x11_plugin_la_SOURCES = $(VULKAN_COMMONSOURCES) video_output/vulkan/x11.c
+libvk_x11_plugin_la_CFLAGS = $(AM_CFLAGS) $(VULKAN_COMMONCFLAGS)
+libvk_x11_plugin_la_LIBADD = $(VULKAN_COMMONLIBS) $(X_LIBS) $(X_PRE_LIBS) -lX11
+
 if HAVE_XCB
 pkglib_LTLIBRARIES += libvlc_xcb_events.la
 vout_LTLIBRARIES += libxcb_x11_plugin.la libxcb_window_plugin.la
@@ -179,6 +198,9 @@ vout_LTLIBRARIES += libegl_x11_plugin.la
 endif
 if HAVE_GL
 vout_LTLIBRARIES += libglx_plugin.la
+endif
+if HAVE_VULKAN
+vout_LTLIBRARIES += libvk_x11_plugin.la
 endif
 endif
 

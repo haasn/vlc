@@ -1,0 +1,333 @@
+/**
+ * @file display.c
+ * @brief Vulkan video output module
+ */
+/*****************************************************************************
+ * Copyright © 2018 Niklas Haas
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation; either version 2.1 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
+ *****************************************************************************/
+
+#ifdef HAVE_CONFIG_H
+# include <config.h>
+#endif
+
+
+#ifdef HAVE_CONFIG_H
+# include <config.h>
+#endif
+
+#include <stdlib.h>
+#include <assert.h>
+
+#include <vlc_common.h>
+#include <vlc_placebo.h>
+#include <vlc_plugin.h>
+#include <vlc_vout_display.h>
+#include <vlc_vulkan.h>
+
+#include <libplacebo/renderer.h>
+#include <libplacebo/utils/upload.h>
+#include <libplacebo/swapchain.h>
+#include <libplacebo/vulkan.h>
+
+// Plugin callbacks
+static int Open (vlc_object_t *);
+static void Close (vlc_object_t *);
+
+#define VK_TEXT N_("Vulkan surface extension")
+#define PROVIDER_LONGTEXT N_( \
+    "Extension which provides the Vulkan surface to use.")
+
+vlc_module_begin ()
+    set_shortname (N_("Vulkan"))
+    set_description (N_("Vulkan video output"))
+    set_category (CAT_VIDEO)
+    set_subcategory (SUBCAT_VIDEO_VOUT)
+    set_capability ("vout display", 300)
+    set_callbacks (Open, Close)
+    add_shortcut ("vulkan", "vk")
+    add_module ("vk", "vulkan", NULL,
+                VK_TEXT, PROVIDER_LONGTEXT, true)
+vlc_module_end ()
+
+struct vout_display_sys_t
+{
+    vlc_vk_t *vk;
+    const struct pl_vulkan *pl_vk;
+    const struct pl_swapchain *swapchain;
+    struct pl_renderer *renderer;
+
+    picture_pool_t *pool;
+    const struct pl_tex *plane_tex[4];
+    uint64_t counter;
+};
+
+// Display callbacks
+static picture_pool_t *Pool(vout_display_t *, unsigned);
+static void PictureRender(vout_display_t *, picture_t *, subpicture_t *);
+static void PictureDisplay(vout_display_t *, picture_t *, subpicture_t *);
+static int Control(vout_display_t *, int, va_list);
+
+// Probe for format support
+static bool FormatSupported(vout_display_t *vd, const video_format_t *fmt);
+
+// Allocates a Vulkan surface and instance for video output.
+static int Open(vlc_object_t *obj)
+{
+    vout_display_t *vd = (vout_display_t *) obj;
+    vout_display_sys_t *sys = vd->sys = malloc(sizeof (*sys));
+    if (unlikely(sys == NULL))
+        return VLC_ENOMEM;
+    *sys = (struct vout_display_sys_t) {0};
+
+    vout_window_t *window = vout_display_NewWindow(vd, VOUT_WINDOW_TYPE_INVALID);
+    if (window == NULL)
+    {
+        msg_Err(vd, "parent window not available");
+        goto error;
+    }
+
+    sys->vk = vlc_vk_Create(window, false, NULL); // TODO parametrize
+    if (sys->vk == NULL)
+        goto error;
+
+    struct pl_context *ctx = sys->vk->ctx;
+    struct pl_vulkan_params vk_params = pl_vulkan_default_params;
+    vk_params.instance = sys->vk->instance->instance;
+    vk_params.surface = sys->vk->surface;
+    // TODO: allow influencing device selection
+
+    sys->pl_vk = pl_vulkan_create(ctx, &vk_params);
+    if (!sys->pl_vk)
+        goto error;
+
+    struct pl_vulkan_swapchain_params swap_params = {
+        .surface = sys->vk->surface,
+        .present_mode = VK_PRESENT_MODE_FIFO_KHR,
+        // TODO: allow influencing the other settings?
+    };
+
+    sys->swapchain = pl_vulkan_create_swapchain(sys->pl_vk, &swap_params);
+    if (!sys->swapchain)
+        goto error;
+
+    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+    sys->renderer = pl_renderer_create(ctx, gpu);
+    if (!sys->renderer)
+        goto error;
+
+    vd->info.has_pictures_invalid = true;
+
+    // Attempt using the input format as the display format
+    if (FormatSupported(vd, &vd->source)) {
+        vd->fmt = vd->source;
+    } else {
+        // TODO: pick a good fallback format based on similarity to the source
+        vd->fmt.i_chroma = VLC_CODEC_I410;
+    }
+
+    vd->pool = Pool;
+    vd->prepare = PictureRender;
+    vd->display = PictureDisplay;
+    vd->control = Control;
+    return VLC_SUCCESS;
+
+error:
+    pl_renderer_destroy(&sys->renderer);
+    pl_swapchain_destroy(&sys->swapchain);
+    pl_vulkan_destroy(&sys->pl_vk);
+
+    if (sys->vk != NULL)
+        vlc_vk_Release(sys->vk);
+    if (window != NULL)
+        vout_display_DeleteWindow(vd, window);
+    free(sys);
+    return VLC_EGENERIC;
+}
+
+static void Close(vlc_object_t *obj)
+{
+    vout_display_t *vd = (vout_display_t *)obj;
+    vout_display_sys_t *sys = vd->sys;
+    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+
+    for (int i = 0; i < 4; i++)
+        pl_tex_destroy(gpu, &sys->plane_tex[i]);
+
+    pl_renderer_destroy(&sys->renderer);
+    pl_swapchain_destroy(&sys->swapchain);
+    pl_vulkan_destroy(&sys->pl_vk);
+
+    vlc_vk_Release(sys->vk);
+    vout_display_DeleteWindow(vd, sys->vk->window);
+
+    if (sys->pool)
+        picture_pool_Release(sys->pool);
+    free (sys);
+}
+
+static picture_pool_t *Pool(vout_display_t *vd, unsigned count)
+{
+    // TODO: use mapped buffers
+    vout_display_sys_t *sys = vd->sys;
+    if (!sys->pool)
+        sys->pool = picture_pool_NewFromFormat(&vd->fmt, count);
+    return sys->pool;
+}
+
+static void PictureRender(vout_display_t *vd, picture_t *pic, subpicture_t *subpicture)
+{
+    vout_display_sys_t *sys = vd->sys;
+    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+    bool failed = false;
+
+    struct pl_swapchain_frame frame;
+    if (!pl_swapchain_start_frame(sys->swapchain, &frame))
+        return; // Probably benign error, ignore it
+
+    struct pl_image img = {
+        .signature  = sys->counter++,
+        .num_planes = pic->i_planes,
+        .width      = pic->format.i_width,
+        .height     = pic->format.i_height,
+        .color      = vlc_placebo_ColorSpace(&pic->format),
+        .repr       = vlc_placebo_ColorRepr(&pic->format),
+        // TODO: set src_rect based on desired crop
+    };
+
+    // Upload the image data for each plane
+    struct pl_plane_data data[4];
+    if (!vlc_placebo_PlaneData(pic, data))
+        abort(); // XXX
+
+    for (int i = 0; i < pic->i_planes; i++) {
+        struct pl_plane *plane = &img.planes[i];
+        if (!pl_upload_plane(gpu, plane, &sys->plane_tex[i], &data[i])) {
+            msg_Err(vd, "Failed uploading image data!");
+            failed = true;
+            goto done;
+        }
+
+        // Matches only the chroma planes, never luma or alpha
+        if (vlc_fourcc_IsYUV(pic->format.i_chroma) && i != 0 && i != 3) {
+            enum pl_chroma_location loc = vlc_placebo_ChromaLoc(&pic->format);
+            pl_chroma_location_offset(loc, &plane->shift_x, &plane->shift_y);
+        }
+    }
+
+    struct pl_render_target target;
+    pl_render_target_from_swapchain(&target, &frame);
+    // TODO: set dst_rect based on the desired crop
+    // TODO: set overlays based on the subpictures
+
+    struct pl_render_params params = pl_render_default_params;
+    params.deband_params = NULL; // XXX: work-around
+    // TODO: allow changing renderer settings
+
+    if (!pl_render_image(sys->renderer, &img, &target, &params)) {
+        msg_Err(vd, "Failed rendering frame!");
+        failed = true;
+        goto done;
+    }
+
+done:
+
+    if (failed)
+        pl_tex_clear(gpu, frame.fbo, (float[4]){ 1.0, 0.0, 0.0, 1.0 });
+
+    if (!pl_swapchain_submit_frame(sys->swapchain)) {
+        msg_Err(vd, "Failed rendering frame!");
+        return; // XXX: This is probably a serious failure. Can we request
+                // reinit or something?
+    }
+}
+
+static void PictureDisplay(vout_display_t *vd, picture_t *pic, subpicture_t *subpicture)
+{
+    picture_Release(pic);
+
+    vout_display_sys_t *sys = vd->sys;
+    pl_swapchain_swap_buffers(sys->swapchain);
+}
+
+static bool FormatSupported(vout_display_t *vd, const video_format_t *fmt)
+{
+    vout_display_sys_t *sys = vd->sys;
+    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+    struct pl_plane_data data[4];
+    int planes = vlc_placebo_PlaneFormat(fmt, data);
+    if (!planes)
+        return false;
+
+    for (int i = 0; i < planes; i++) {
+        if (!pl_plane_find_fmt(gpu, NULL, &data[i]))
+            return false;
+    }
+
+    return true;
+}
+
+static int Control(vout_display_t *vd, int query, va_list ap)
+{
+    vout_display_sys_t *sys = vd->sys;
+
+    switch (query)
+    {
+    case VOUT_DISPLAY_RESET_PICTURES:
+        pl_renderer_flush_cache(sys->renderer);
+        sys->counter = 0;
+        return VLC_SUCCESS;
+
+    // TODO: get and store the crop data from this!
+/*
+    case VOUT_DISPLAY_CHANGE_DISPLAY_SIZE:
+    case VOUT_DISPLAY_CHANGE_DISPLAY_FILLED:
+    case VOUT_DISPLAY_CHANGE_ZOOM:
+    {
+        vout_display_cfg_t c = *va_arg (ap, const vout_display_cfg_t *);
+        const video_format_t *src = &vd->source;
+        vout_display_place_t place;
+
+        vout_display_PlacePicture (&place, src, &c, false);
+        return VLC_SUCCESS;
+    }
+*/
+
+/*
+    case VOUT_DISPLAY_CHANGE_SOURCE_ASPECT:
+    case VOUT_DISPLAY_CHANGE_SOURCE_CROP:
+    {
+        const vout_display_cfg_t *cfg = vd->cfg;
+        vout_display_place_t place;
+
+        vout_display_PlacePicture (&place, &vd->source, cfg, false);
+        if (vlc_gl_MakeCurrent (sys->gl) != VLC_SUCCESS)
+            return VLC_EGENERIC;
+        vout_display_opengl_SetWindowAspectRatio(sys->vgl, (float)place.width / place.height);
+        vout_display_opengl_Viewport(sys->vgl, place.x, place.y, place.width, place.height);
+        vlc_gl_ReleaseCurrent (sys->gl);
+        return VLC_SUCCESS;
+    }
+    case VOUT_DISPLAY_CHANGE_VIEWPOINT:
+        return vout_display_opengl_SetViewpoint (sys->vgl,
+            &va_arg (ap, const vout_display_cfg_t* )->viewpoint);
+*/
+    default:
+        msg_Err (vd, "Unknown request %d", query);
+    }
+
+    return VLC_EGENERIC;
+}

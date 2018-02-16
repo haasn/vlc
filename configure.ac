@@ -3025,6 +3025,26 @@ dnl OpenGL ES 2: depends on EGL 1.1
 PKG_ENABLE_MODULES_VLC([GLES2], [], [glesv2], [OpenGL ES v2 support], [disabled])
 
 dnl
+dnl Vulkan
+dnl FIXME: make this depend on LIBPLACEBO somehow?
+dnl
+AC_ARG_ENABLE(vulkan,
+  [AS_HELP_STRING([--disable-vulkan],
+      [disable Vulkan support (default auto)])])
+
+AS_IF([test "$enable_vulkan" != "no"], [
+  PKG_CHECK_MODULES([VULKAN], [vulkan >= 1.0.26], [
+    AC_DEFINE([HAVE_VULKAN], [1], [Define to 1 if vulkan is enabled.])
+  ], [
+    AS_IF([test -n "${enable_vulkan}"], [
+      AC_MSG_ERROR([${VULKAN_PKG_ERRORS}.])
+    ])
+    enable_vulkan="no"
+  ])
+])
+AM_CONDITIONAL(HAVE_VULKAN, [test "$enable_vulkan" != "no"])
+
+dnl
 dnl  Xlib
 dnl
 

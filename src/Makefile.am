@@ -105,6 +105,7 @@ pluginsinclude_HEADERS = \
 	../include/vlc_vout_display.h \
 	../include/vlc_vout_osd.h \
 	../include/vlc_vout_window.h \
+	../include/vlc_vulkan.h \
 	../include/vlc_xml.h \
 	../include/vlc_xlib.h \
 	$(NULL)
@@ -460,6 +461,11 @@ libvlccore_la_SOURCES += \
 	video_output/placebo.c
 AM_CFLAGS += $(LIBPLACEBO_CFLAGS)
 libvlccore_la_LIBADD += $(LIBPLACEBO_LIBS)
+endif
+
+if HAVE_VULKAN
+libvlccore_la_SOURCES += \
+	video_output/vulkan.c
 endif
 
 if ENABLE_SOUT

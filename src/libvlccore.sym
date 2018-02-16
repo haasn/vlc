@@ -718,6 +718,9 @@ vlc_gl_Hold
 vlc_gl_surface_Create
 vlc_gl_surface_CheckSize
 vlc_gl_surface_Destroy
+vlc_vk_Create
+vlc_vk_Release
+vlc_vk_Hold
 vlc_placebo_Create
 vlc_placebo_ColorSpace
 vlc_placebo_ColorRepr
