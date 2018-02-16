@@ -83,9 +83,6 @@ static void PictureRender(vout_display_t *, picture_t *, subpicture_t *);
 static void PictureDisplay(vout_display_t *, picture_t *, subpicture_t *);
 static int Control(vout_display_t *, int, va_list);
 
-// Probe for format support
-static bool FormatSupported(vout_display_t *vd, const video_format_t *fmt);
-
 // Allocates a Vulkan surface and instance for video output.
 static int Open(vlc_object_t *obj)
 {
@@ -134,11 +131,22 @@ static int Open(vlc_object_t *obj)
     vd->info.has_pictures_invalid = true;
 
     // Attempt using the input format as the display format
-    if (FormatSupported(vd, &vd->source)) {
-        vd->fmt = vd->source;
+    if (vlc_placebo_FormatSupported(gpu, vd->source.i_chroma)) {
+        vd->fmt.i_chroma = vd->source.i_chroma;
     } else {
-        // TODO: pick a good fallback format based on similarity to the source
-        vd->fmt.i_chroma = VLC_CODEC_I410;
+        const vlc_fourcc_t *fcc;
+        for (fcc = vlc_fourcc_GetFallback(vd->source.i_chroma); *fcc; fcc++) {
+            if (vlc_placebo_FormatSupported(gpu, *fcc)) {
+                vd->fmt.i_chroma = *fcc;
+                break;
+            }
+        }
+
+        if (!vd->fmt.i_chroma) {
+            vd->fmt.i_chroma = VLC_CODEC_RGBA;
+            msg_Warn(vd, "Failed picking any suitable input format, falling "
+                     "back to RGBA for sanity!");
+        }
     }
 
     vd->pool = Pool;
@@ -286,23 +294,6 @@ static void PictureDisplay(vout_display_t *vd, picture_t *pic, subpicture_t *sub
     pl_swapchain_swap_buffers(sys->swapchain);
 }
 
-static bool FormatSupported(vout_display_t *vd, const video_format_t *fmt)
-{
-    vout_display_sys_t *sys = vd->sys;
-    const struct pl_gpu *gpu = sys->pl_vk->gpu;
-    struct pl_plane_data data[4];
-    int planes = vlc_placebo_PlaneFormat(fmt, data);
-    if (!planes)
-        return false;
-
-    for (int i = 0; i < planes; i++) {
-        if (!pl_plane_find_fmt(gpu, NULL, &data[i]))
-            return false;
-    }
-
-    return true;
-}
-
 static int Control(vout_display_t *vd, int query, va_list ap)
 {
     vout_display_sys_t *sys = vd->sys;
@@ -310,6 +301,7 @@ static int Control(vout_display_t *vd, int query, va_list ap)
     switch (query)
     {
     case VOUT_DISPLAY_RESET_PICTURES:
+        // XXX: do we also have to re-probe formats?
         pl_renderer_flush_cache(sys->renderer);
         sys->counter = 0;
         return VLC_SUCCESS;
