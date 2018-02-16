@@ -68,10 +68,12 @@ struct vout_display_sys_t
     vlc_vk_t *vk;
     const struct pl_vulkan *pl_vk;
     const struct pl_swapchain *swapchain;
-    struct pl_renderer *renderer;
-
-    picture_pool_t *pool;
     const struct pl_tex *plane_tex[4];
+    struct pl_renderer *renderer;
+    picture_pool_t *pool;
+
+    // Dynamic during rendering
+    vout_display_place_t place;
     uint64_t counter;
 };
 
@@ -205,8 +207,17 @@ static void PictureRender(vout_display_t *vd, picture_t *pic, subpicture_t *subp
         .height     = pic->format.i_height,
         .color      = vlc_placebo_ColorSpace(&pic->format),
         .repr       = vlc_placebo_ColorRepr(&pic->format),
-        // TODO: set src_rect based on desired crop
+        .src_rect = {
+            .x0 = pic->format.i_x_offset,
+            .y0 = pic->format.i_y_offset,
+            .x1 = pic->format.i_x_offset + pic->format.i_visible_width,
+            .y1 = pic->format.i_y_offset + pic->format.i_visible_height,
+        },
     };
+
+    printf("width: %d, height: %d, visw: %d, vish: %d\n",
+           pic->format.i_width, pic->format.i_height,
+           pic->format.i_visible_width, pic->format.i_visible_height);
 
     // Upload the image data for each plane
     struct pl_plane_data data[4];
@@ -230,8 +241,20 @@ static void PictureRender(vout_display_t *vd, picture_t *pic, subpicture_t *subp
 
     struct pl_render_target target;
     pl_render_target_from_swapchain(&target, &frame);
-    // TODO: set dst_rect based on the desired crop
     // TODO: set overlays based on the subpictures
+    target.dst_rect = (struct pl_rect2d) {
+        .x0 = sys->place.x,
+        .y0 = sys->place.y,
+        .x1 = sys->place.x + sys->place.width,
+        .y1 = sys->place.y + sys->place.height,
+    };
+
+    // If we don't cover the entire output, clear it first
+    struct pl_rect2d full = {0, 0, frame.fbo->params.w, frame.fbo->params.h };
+    if (!pl_rect2d_eq(target.dst_rect, full)) {
+        // TODO: make background color configurable?
+        pl_tex_clear(gpu, frame.fbo, (float[4]){ 0.0, 0.0, 0.0, 0.0 });
+    }
 
     struct pl_render_params params = pl_render_default_params;
     params.deband_params = NULL; // XXX: work-around
@@ -291,40 +314,18 @@ static int Control(vout_display_t *vd, int query, va_list ap)
         sys->counter = 0;
         return VLC_SUCCESS;
 
-    // TODO: get and store the crop data from this!
-/*
     case VOUT_DISPLAY_CHANGE_DISPLAY_SIZE:
     case VOUT_DISPLAY_CHANGE_DISPLAY_FILLED:
-    case VOUT_DISPLAY_CHANGE_ZOOM:
-    {
-        vout_display_cfg_t c = *va_arg (ap, const vout_display_cfg_t *);
-        const video_format_t *src = &vd->source;
-        vout_display_place_t place;
-
-        vout_display_PlacePicture (&place, src, &c, false);
+    case VOUT_DISPLAY_CHANGE_ZOOM: {
+        vout_display_cfg_t cfg = *va_arg (ap, const vout_display_cfg_t *);
+        vout_display_PlacePicture (&sys->place, &vd->source, &cfg, false);
         return VLC_SUCCESS;
     }
-*/
 
-/*
     case VOUT_DISPLAY_CHANGE_SOURCE_ASPECT:
     case VOUT_DISPLAY_CHANGE_SOURCE_CROP:
-    {
-        const vout_display_cfg_t *cfg = vd->cfg;
-        vout_display_place_t place;
-
-        vout_display_PlacePicture (&place, &vd->source, cfg, false);
-        if (vlc_gl_MakeCurrent (sys->gl) != VLC_SUCCESS)
-            return VLC_EGENERIC;
-        vout_display_opengl_SetWindowAspectRatio(sys->vgl, (float)place.width / place.height);
-        vout_display_opengl_Viewport(sys->vgl, place.x, place.y, place.width, place.height);
-        vlc_gl_ReleaseCurrent (sys->gl);
         return VLC_SUCCESS;
-    }
-    case VOUT_DISPLAY_CHANGE_VIEWPOINT:
-        return vout_display_opengl_SetViewpoint (sys->vgl,
-            &va_arg (ap, const vout_display_cfg_t* )->viewpoint);
-*/
+
     default:
         msg_Err (vd, "Unknown request %d", query);
     }
