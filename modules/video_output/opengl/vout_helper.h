@@ -33,6 +33,7 @@
 
 #ifdef HAVE_LIBPLACEBO
 #include <libplacebo/shaders/colorspace.h>
+#include <vlc_placebo.h>
 
 #define RENDER_INTENT_TEXT N_("Rendering intent for color conversion")
 #define RENDER_INTENT_LONGTEXT N_("The algorithm used to convert between color spaces")
