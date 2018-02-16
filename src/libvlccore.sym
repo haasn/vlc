@@ -722,6 +722,9 @@ vlc_placebo_Create
 vlc_placebo_ColorSpace
 vlc_placebo_ColorRepr
 vlc_placebo_ChromaLoc
+vlc_placebo_PlaneFormat
+vlc_placebo_PlaneData
+vlc_placebo_FormatSupported
 vlm_Control
 vlm_Delete
 vlm_ExecuteCommand

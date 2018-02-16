@@ -153,3 +153,298 @@ enum pl_chroma_location vlc_placebo_ChromaLoc(const video_format_t *fmt)
 
     return locs[fmt->chroma_location];
 }
+
+struct plane_desc {
+    int components;
+    size_t pixel_size;
+    int comp_bits[4];
+    int comp_map[4];
+    int w_denom;
+    int h_denom;
+};
+
+struct fmt_desc {
+    enum pl_fmt_type type;
+    struct plane_desc planes[4];
+    int num_planes;
+};
+
+#define SIZE(n, bits, pad) (((n) * (bits) + (pad) + 7) / 8)
+#define COMPS(...) {__VA_ARGS__}
+
+#define PLANE(n, bits, map, wd, hd, pad)            \
+  { .components = n,                                \
+    .pixel_size = SIZE(n, bits, pad),               \
+    .comp_bits = {bits, bits, bits, bits},          \
+    .comp_map = map,                                \
+    .w_denom = wd,                                  \
+    .h_denom = hd,                                  \
+  }
+
+#define _PLANAR(n, bits, wd, hd)            \
+  { .type = PL_FMT_UNORM,                   \
+    .num_planes = n,                        \
+    .planes = {                             \
+        PLANE(1, bits, {0},  1,  1, 0),     \
+        PLANE(1, bits, {1}, wd, hd, 0),     \
+        PLANE(1, bits, {2}, wd, hd, 0),     \
+        PLANE(1, bits, {3},  1,  1, 0),     \
+  }}
+
+#define _SEMIPLANAR(n, bits, wd, hd)             \
+  { .type = PL_FMT_UNORM,                        \
+    .num_planes = n,                             \
+    .planes = {                                  \
+        PLANE(1, bits, {0},          1,  1, 0),  \
+        PLANE(2, bits, COMPS(1, 2), wd, hd, 0),  \
+        PLANE(1, bits, {3},          1,  1, 0),  \
+  }}
+
+#define PACKED(n, bits, pad)                            \
+  { .type = PL_FMT_UNORM,                               \
+    .num_planes = 1,                                    \
+    .planes = {                                         \
+        PLANE(n, bits, COMPS(0, 1, 2, 3), 1, 1, pad),   \
+  }}
+
+#define SINGLE(t, bits)                     \
+  { .type = PL_FMT_##t,                     \
+    .num_planes = 1,                        \
+    .planes = {                             \
+        PLANE(1, bits, {0}, 1, 1, 0),       \
+  }}
+
+#define PLANAR(...) _PLANAR(__VA_ARGS__)
+#define SEMIPLANAR(...) _SEMIPLANAR(__VA_ARGS__)
+
+#define _410 4, 2
+#define _411 4, 1
+#define _420 2, 2
+#define _422 2, 1
+#define _440 1, 2
+#define _444 1, 1
+
+// NOTE: This list contains some special formats that don't follow the normal
+// rules, but which are included regardless. The corrections for these
+// exceptions happen below, in the function vlc_placebo_PlaneFormat!
+static const struct { vlc_fourcc_t fcc; struct fmt_desc desc; } formats[] = {
+    { VLC_CODEC_YV9,            PLANAR(3,  8, _410) },
+    { VLC_CODEC_I410,           PLANAR(3,  8, _410) },
+    { VLC_CODEC_I411,           PLANAR(3,  8, _411) },
+    { VLC_CODEC_I440,           PLANAR(3,  8, _440) },
+    { VLC_CODEC_J440,           PLANAR(3,  8, _440) },
+    { VLC_CODEC_GREY,           PLANAR(1,  8, _444) },
+
+    { VLC_CODEC_I420,           PLANAR(3,  8, _420) },
+    { VLC_CODEC_J420,           PLANAR(3,  8, _420) },
+#ifdef WORDS_BIGENDIAN
+    { VLC_CODEC_I420_9B,        PLANAR(3, 16, _420) },
+    { VLC_CODEC_I420_10B,       PLANAR(3, 16, _420) },
+    { VLC_CODEC_I420_12B,       PLANAR(3, 16, _420) },
+    { VLC_CODEC_I420_16B,       PLANAR(3, 16, _420) },
+#else
+    { VLC_CODEC_I420_9L,        PLANAR(3, 16, _420) },
+    { VLC_CODEC_I420_10L,       PLANAR(3, 16, _420) },
+    { VLC_CODEC_I420_12L,       PLANAR(3, 16, _420) },
+    { VLC_CODEC_I420_16L,       PLANAR(3, 16, _420) },
+#endif
+
+    { VLC_CODEC_I422,           PLANAR(3,  8, _422) },
+    { VLC_CODEC_J422,           PLANAR(3,  8, _422) },
+#ifdef WORDS_BIGENDIAN
+    { VLC_CODEC_I422_9B,        PLANAR(3, 16, _422) },
+    { VLC_CODEC_I422_10B,       PLANAR(3, 16, _422) },
+    { VLC_CODEC_I422_12B,       PLANAR(3, 16, _422) },
+#else
+    { VLC_CODEC_I422_9L,        PLANAR(3, 16, _422) },
+    { VLC_CODEC_I422_10L,       PLANAR(3, 16, _422) },
+    { VLC_CODEC_I422_12L,       PLANAR(3, 16, _422) },
+#endif
+
+    { VLC_CODEC_I444,           PLANAR(3,  8, _444) },
+    { VLC_CODEC_J444,           PLANAR(3,  8, _444) },
+#ifdef WORDS_BIGENDIAN
+    { VLC_CODEC_I444_9B,        PLANAR(3, 16, _444) },
+    { VLC_CODEC_I444_10B,       PLANAR(3, 16, _444) },
+    { VLC_CODEC_I444_12B,       PLANAR(3, 16, _444) },
+    { VLC_CODEC_I444_16B,       PLANAR(3, 16, _444) },
+#else
+    { VLC_CODEC_I444_9L,        PLANAR(3, 16, _444) },
+    { VLC_CODEC_I444_10L,       PLANAR(3, 16, _444) },
+    { VLC_CODEC_I444_12L,       PLANAR(3, 16, _444) },
+    { VLC_CODEC_I444_16L,       PLANAR(3, 16, _444) },
+#endif
+
+    { VLC_CODEC_YUVA,           PLANAR(4,  8, _444) },
+    { VLC_CODEC_YUV422A,        PLANAR(4,  8, _422) },
+#ifdef WORDS_BIGENDIAN
+    { VLC_CODEC_YUVA_444_10B,   PLANAR(4, 16, _444) },
+#else
+    { VLC_CODEC_YUVA_444_10L,   PLANAR(4, 16, _444) },
+#endif
+
+    { VLC_CODEC_NV12,           SEMIPLANAR(2,  8, _420) },
+    { VLC_CODEC_NV21,           SEMIPLANAR(2,  8, _420) },
+    { VLC_CODEC_P010,           SEMIPLANAR(2, 16, _420) },
+    { VLC_CODEC_NV16,           SEMIPLANAR(2,  8, _422) },
+    { VLC_CODEC_NV61,           SEMIPLANAR(2,  8, _422) },
+    { VLC_CODEC_NV24,           SEMIPLANAR(2,  8, _444) },
+    { VLC_CODEC_NV42,           SEMIPLANAR(2,  8, _444) },
+
+    { VLC_CODEC_RGB8,           PACKED(3, 2, 2), },
+    { VLC_CODEC_RGB12,          PACKED(3, 4, 4), },
+    { VLC_CODEC_RGB15,          PACKED(3, 5, 1), },
+    { VLC_CODEC_RGB16,          PACKED(3, 5, 1), },
+    { VLC_CODEC_RGB24,          PACKED(3, 8, 0), },
+    { VLC_CODEC_RGB32,          PACKED(3, 8, 8), },
+    { VLC_CODEC_RGBA,           PACKED(4, 8, 0), },
+    { VLC_CODEC_BGRA,           PACKED(4, 8, 0), },
+
+    { VLC_CODEC_GBR_PLANAR,     PLANAR(3,  8, _444) },
+#ifdef WORDS_BIGENDIAN
+    { VLC_CODEC_GBR_PLANAR_9B,  PLANAR(3, 16, _444) },
+    { VLC_CODEC_GBR_PLANAR_10B, PLANAR(3, 16, _444) },
+    { VLC_CODEC_GBR_PLANAR_16B, PLANAR(3, 16, _444) },
+#else
+    { VLC_CODEC_GBR_PLANAR_9L,  PLANAR(3, 16, _444) },
+    { VLC_CODEC_GBR_PLANAR_10L, PLANAR(3, 16, _444) },
+    { VLC_CODEC_GBR_PLANAR_16L, PLANAR(3, 16, _444) },
+#endif
+
+    { VLC_CODEC_U8,             SINGLE(UNORM,  8) },
+    { VLC_CODEC_S8,             SINGLE(SNORM,  8) },
+    { VLC_CODEC_U16N,           SINGLE(UNORM, 16) },
+    { VLC_CODEC_S16N,           SINGLE(SNORM, 16) },
+    { VLC_CODEC_U24N,           SINGLE(UNORM, 24) },
+    { VLC_CODEC_S24N,           SINGLE(SNORM, 24) },
+    { VLC_CODEC_U32N,           SINGLE(UNORM, 32) },
+    { VLC_CODEC_S32N,           SINGLE(SNORM, 32) },
+    { VLC_CODEC_FL32,           SINGLE(FLOAT, 32) },
+    { VLC_CODEC_FL64,           SINGLE(FLOAT, 64) },
+
+    { 0 },
+};
+
+// This fills everything except width/height, which are left as 1
+static const struct fmt_desc *FillDesc(vlc_fourcc_t fcc,
+                                       struct pl_plane_data data[4])
+{
+    const struct fmt_desc *desc;
+    for (int i = 0; formats[i].fcc; i++) {
+        if (formats[i].fcc == fcc) {
+            desc = &formats[i].desc;
+            goto found;
+        }
+    }
+
+    return NULL;
+
+found:
+    assert(desc->num_planes <= 4);
+    for (int i = 0; i < desc->num_planes; i++) {
+        const struct plane_desc *p = &desc->planes[i];
+
+        data[i] = (struct pl_plane_data) {
+            .type   = desc->type,
+            .width  = 1,
+            .height = 1,
+            .pixel_stride = p->pixel_size,
+        };
+
+        for (int c = 0; c < p->components; c++) {
+            data[i].component_size[c] = p->comp_bits[c];
+            data[i].component_map[c] = p->comp_map[c];
+        }
+    }
+
+    // Exceptions to the rule
+    switch (fcc) {
+    case VLC_CODEC_YV9:
+    case VLC_CODEC_YV12:
+        // Planar Y:V:U
+        data[1].component_map[0] = 2;
+        data[2].component_map[0] = 1;
+        break;
+
+    case VLC_CODEC_BGRA:
+        // Packed BGR
+        data[0].component_map[0] = 2;
+        data[0].component_map[1] = 1;
+        data[0].component_map[2] = 0;
+        break;
+
+    case VLC_CODEC_GBR_PLANAR:
+    case VLC_CODEC_GBR_PLANAR_9L:
+    case VLC_CODEC_GBR_PLANAR_10L:
+    case VLC_CODEC_GBR_PLANAR_16L:
+    case VLC_CODEC_GBR_PLANAR_9B:
+    case VLC_CODEC_GBR_PLANAR_10B:
+    case VLC_CODEC_GBR_PLANAR_16B:
+        // Planar GBR
+        data[0].component_map[0] = 1;
+        data[1].component_map[0] = 2;
+        data[2].component_map[0] = 0;
+        break;
+
+    case VLC_CODEC_RGB16:
+        // 5:6:5 instead of 5:5:5
+        data[0].component_size[1] += 1;
+        break;
+
+    case VLC_CODEC_RGB8:
+        // 3:3:2 instead of 2:2:2
+        data[0].component_size[0] += 1;
+        data[0].component_size[1] += 1;
+        break;
+
+    default: break;
+    }
+
+    return desc;
+}
+
+int vlc_placebo_PlaneFormat(const video_format_t *fmt, struct pl_plane_data data[4])
+{
+    const struct fmt_desc *desc = FillDesc(fmt->i_chroma, data);
+    if (!desc)
+        return 0;
+
+    for (int i = 0; i < desc->num_planes; i++) {
+        const struct plane_desc *p = &desc->planes[i];
+        data[i].width  = (fmt->i_width  + p->w_denom - 1) / p->w_denom;
+        data[i].height = (fmt->i_height + p->h_denom - 1) / p->h_denom;
+    }
+
+    return desc->num_planes;
+}
+
+int vlc_placebo_PlaneData(const picture_t *pic, struct pl_plane_data data[4])
+{
+    int planes = vlc_placebo_PlaneFormat(&pic->format, data);
+    if (!planes)
+        return 0;
+
+    assert(planes == pic->i_planes);
+    for (int i = 0; i < planes; i++) {
+        assert(data[i].height == pic->p[i].i_lines);
+        data[i].row_stride = pic->p[i].i_pitch;
+        data[i].pixels = pic->p[i].p_pixels;
+    }
+
+    return planes;
+}
+
+bool vlc_placebo_FormatSupported(const struct pl_gpu *gpu, vlc_fourcc_t fcc)
+{
+    struct pl_plane_data data[4];
+    const struct fmt_desc *desc = FillDesc(fcc, data);
+    if (!desc)
+        return false;
+
+    for (int i = 0; i < desc->num_planes; i++) {
+        if (!pl_plane_find_fmt(gpu, NULL, &data[i]))
+            return false;
+    }
+
+    return true;
+}
