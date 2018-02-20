@@ -128,8 +128,6 @@ static int Open(vlc_object_t *obj)
     if (!sys->renderer)
         goto error;
 
-    vd->info.has_pictures_invalid = true;
-
     // Attempt using the input format as the display format
     if (vlc_placebo_FormatSupported(gpu, vd->source.i_chroma)) {
         vd->fmt.i_chroma = vd->source.i_chroma;
@@ -211,8 +209,8 @@ static void PictureRender(vout_display_t *vd, picture_t *pic, subpicture_t *subp
     struct pl_image img = {
         .signature  = sys->counter++,
         .num_planes = pic->i_planes,
-        .width      = pic->format.i_width,
-        .height     = pic->format.i_height,
+        .width      = pic->format.i_visible_width,
+        .height     = pic->format.i_visible_height,
         .color      = vlc_placebo_ColorSpace(&pic->format),
         .repr       = vlc_placebo_ColorRepr(&pic->format),
         .src_rect = {
@@ -265,7 +263,6 @@ static void PictureRender(vout_display_t *vd, picture_t *pic, subpicture_t *subp
     }
 
     struct pl_render_params params = pl_render_default_params;
-    params.deband_params = NULL; // XXX: work-around
     // TODO: allow changing renderer settings
 
     if (!pl_render_image(sys->renderer, &img, &target, &params)) {
@@ -301,21 +298,19 @@ static int Control(vout_display_t *vd, int query, va_list ap)
     switch (query)
     {
     case VOUT_DISPLAY_RESET_PICTURES:
-        // XXX: do we also have to re-probe formats?
-        pl_renderer_flush_cache(sys->renderer);
-        sys->counter = 0;
-        return VLC_SUCCESS;
+        abort();
 
     case VOUT_DISPLAY_CHANGE_DISPLAY_SIZE:
     case VOUT_DISPLAY_CHANGE_DISPLAY_FILLED:
     case VOUT_DISPLAY_CHANGE_ZOOM: {
         vout_display_cfg_t cfg = *va_arg (ap, const vout_display_cfg_t *);
-        vout_display_PlacePicture (&sys->place, &vd->source, &cfg, false);
+        vout_display_PlacePicture(&sys->place, &vd->source, &cfg, false);
         return VLC_SUCCESS;
     }
 
     case VOUT_DISPLAY_CHANGE_SOURCE_ASPECT:
     case VOUT_DISPLAY_CHANGE_SOURCE_CROP:
+        vout_display_PlacePicture(&sys->place, &vd->source, vd->cfg, false);
         return VLC_SUCCESS;
 
     default:

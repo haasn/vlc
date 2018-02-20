@@ -411,8 +411,8 @@ int vlc_placebo_PlaneFormat(const video_format_t *fmt, struct pl_plane_data data
 
     for (int i = 0; i < desc->num_planes; i++) {
         const struct plane_desc *p = &desc->planes[i];
-        data[i].width  = (fmt->i_width  + p->w_denom - 1) / p->w_denom;
-        data[i].height = (fmt->i_height + p->h_denom - 1) / p->h_denom;
+        data[i].width  = (fmt->i_visible_width  + p->w_denom - 1) / p->w_denom;
+        data[i].height = (fmt->i_visible_height + p->h_denom - 1) / p->h_denom;
     }
 
     return desc->num_planes;
