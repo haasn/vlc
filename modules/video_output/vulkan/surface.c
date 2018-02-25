@@ -3,7 +3,7 @@
  * @brief Vulkan platform-specific surface extension module
  */
 /*****************************************************************************
- * Copyright © 2018 Niklas Haas
+ * Copyright © 2018 Niklas Haas, Marvin Scholz
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -32,9 +32,16 @@
 #include <vlc_vout_window.h>
 
 #ifdef VK_USE_PLATFORM_XLIB_KHR
+
 #include <vlc_xlib.h>
 #define MODULE_NAME N_("VkXlib")
 #define MODULE_DESC N_("Xlib extension for Vulkan")
+
+#elif VK_USE_PLATFORM_WIN32_KHR
+
+#define MODULE_NAME N_("VkWin32")
+#define MODULE_DESC N_("Win32 extension for Vulkan")
+
 #endif
 
 #include "../placebo_utils.h"
@@ -46,6 +53,7 @@ static int Open (vlc_object_t *obj)
     const char *surf_extension;
 
 #ifdef VK_USE_PLATFORM_XLIB_KHR
+
     if (vk->window->type != VOUT_WINDOW_TYPE_XID || !vlc_xlib_init(obj))
         return VLC_EGENERIC;
 
@@ -55,6 +63,14 @@ static int Open (vlc_object_t *obj)
         return VLC_EGENERIC;
 
     surf_extension = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
+
+#elif VK_USE_PLATFORM_WIN32_KHR
+
+    if (vk->window->type != VOUT_WINDOW_TYPE_HWND)
+        return VLC_EGENERIC;
+
+    surf_extension = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
+
 #endif
 
     // Initialize Vulkan instance
@@ -74,6 +90,7 @@ static int Open (vlc_object_t *obj)
     // Create the platform-specific surface object
     const VkInstance *vkinst = &vk->instance->instance;
 #ifdef VK_USE_PLATFORM_XLIB_KHR
+
     VkXlibSurfaceCreateInfoKHR xinfo = {
          .sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
          .dpy = dpy,
@@ -81,6 +98,20 @@ static int Open (vlc_object_t *obj)
     };
 
     VkResult res = vkCreateXlibSurfaceKHR(*vkinst, &xinfo, NULL, &vk->surface);
+
+#elif VK_USE_PLATFORM_WIN32_KHR
+
+    // Get current win32 HINSTANCE
+    HINSTANCE hInst = GetModuleHandle(NULL);
+
+    VkWin32SurfaceCreateInfoKHR winfo = {
+         .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+         .hinstance = hInst,
+         .hwnd = (HWND) vk->window->handle.hwnd,
+    };
+
+    VkResult res = vkCreateWin32SurfaceKHR(*vkinst, &winfo, NULL, &vk->surface);
+
 #endif
 
     if (res != VK_SUCCESS)
