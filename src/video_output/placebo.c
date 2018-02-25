@@ -85,7 +85,7 @@ struct pl_color_space vlc_placebo_ColorSpace(const video_format_t *fmt)
     // As a fallback value for the signal peak, we can also use the mastering
     // metadata's luminance information
     if (!sig_peak)
-        sig_peak = fmt->mastering.max_luminance / PL_COLOR_REF_WHITE;
+        sig_peak = fmt->mastering.max_luminance / (10000.0 * PL_COLOR_REF_WHITE);
 
     // Sanitize the sig_peak/sig_avg, because of buggy or low quality tagging
     // that's sadly common in lots of typical sources
