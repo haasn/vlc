@@ -324,9 +324,8 @@ int vlc_placebo_PlaneData(const picture_t *pic, struct pl_plane_data data[4])
 
     assert(planes == pic->i_planes);
     for (int i = 0; i < planes; i++) {
-        // XXX: which of these two fields am I supposed to use?
         assert(data[i].height == pic->p[i].i_visible_lines);
-        data[i].row_stride = pic->p[i].i_visible_pitch;
+        data[i].row_stride = pic->p[i].i_pitch;
         data[i].pixels = pic->p[i].p_pixels;
     }
 
