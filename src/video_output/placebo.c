@@ -265,6 +265,14 @@ static void FillDesc(vlc_fourcc_t fcc, const struct fmt_desc *desc,
         data[2].component_map[0] = 1;
         break;
 
+    case VLC_CODEC_RGB32:
+        // XRGB instead of RGBX
+        data[0].component_map[0] = -1;
+        data[1].component_map[0] = 0;
+        data[2].component_map[0] = 1;
+        data[3].component_map[0] = 2;
+        break;
+
     case VLC_CODEC_BGRA:
         // Packed BGR
         data[0].component_map[0] = 2;
