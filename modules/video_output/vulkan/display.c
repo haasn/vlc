@@ -60,7 +60,7 @@ vlc_module_begin ()
     set_callbacks (Open, Close)
     add_shortcut ("vulkan", "vk")
     add_module ("vk", "vulkan", NULL,
-                VK_TEXT, PROVIDER_LONGTEXT, true)
+                VK_TEXT, PROVIDER_LONGTEXT)
 vlc_module_end ()
 
 struct vout_display_sys_t
@@ -79,7 +79,7 @@ struct vout_display_sys_t
 
 // Display callbacks
 static picture_pool_t *Pool(vout_display_t *, unsigned);
-static void PictureRender(vout_display_t *, picture_t *, subpicture_t *);
+static void PictureRender(vout_display_t *, picture_t *, subpicture_t *, mtime_t);
 static void PictureDisplay(vout_display_t *, picture_t *, subpicture_t *);
 static int Control(vout_display_t *, int, va_list);
 
@@ -92,7 +92,7 @@ static int Open(vlc_object_t *obj)
         return VLC_ENOMEM;
     *sys = (struct vout_display_sys_t) {0};
 
-    vout_window_t *window = vout_display_NewWindow(vd, VOUT_WINDOW_TYPE_INVALID);
+    vout_window_t *window = vd->cfg->window;
     if (window == NULL)
     {
         msg_Err(vd, "parent window not available");
@@ -160,8 +160,6 @@ error:
 
     if (sys->vk != NULL)
         vlc_vk_Release(sys->vk);
-    if (window != NULL)
-        vout_display_DeleteWindow(vd, window);
     free(sys);
     return VLC_EGENERIC;
 }
@@ -180,7 +178,6 @@ static void Close(vlc_object_t *obj)
     pl_vulkan_destroy(&sys->pl_vk);
 
     vlc_vk_Release(sys->vk);
-    vout_display_DeleteWindow(vd, sys->vk->window);
 
     if (sys->pool)
         picture_pool_Release(sys->pool);
@@ -196,7 +193,8 @@ static picture_pool_t *Pool(vout_display_t *vd, unsigned count)
     return sys->pool;
 }
 
-static void PictureRender(vout_display_t *vd, picture_t *pic, subpicture_t *subpicture)
+static void PictureRender(vout_display_t *vd, picture_t *pic,
+                          subpicture_t *subpicture, mtime_t date)
 {
     vout_display_sys_t *sys = vd->sys;
     const struct pl_gpu *gpu = sys->pl_vk->gpu;
@@ -220,10 +218,6 @@ static void PictureRender(vout_display_t *vd, picture_t *pic, subpicture_t *subp
             .y1 = pic->format.i_y_offset + pic->format.i_visible_height,
         },
     };
-
-    printf("width: %d, height: %d, visw: %d, vish: %d\n",
-           pic->format.i_width, pic->format.i_height,
-           pic->format.i_visible_width, pic->format.i_visible_height);
 
     // Upload the image data for each plane
     struct pl_plane_data data[4];
