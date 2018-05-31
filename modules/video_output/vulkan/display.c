@@ -43,6 +43,8 @@
 #include <libplacebo/swapchain.h>
 #include <libplacebo/vulkan.h>
 
+#define VLCVK_MAX_BUFFERS 128
+
 // Plugin callbacks
 static int Open (vlc_object_t *);
 static void Close (vlc_object_t *);
@@ -75,6 +77,17 @@ struct vout_display_sys_t
     // Dynamic during rendering
     vout_display_place_t place;
     uint64_t counter;
+
+    // Mapped buffers
+    picture_t *pics[VLCVK_MAX_BUFFERS];
+    unsigned long long list; // bitset of available pictures
+};
+
+struct picture_sys
+{
+    vlc_vk_t *vk;
+    unsigned index;
+    const struct pl_buf *buf;
 };
 
 // Display callbacks
@@ -103,6 +116,7 @@ static int Open(vlc_object_t *obj)
     if (sys->vk == NULL)
         goto error;
 
+
     struct pl_context *ctx = sys->vk->ctx;
     struct pl_vulkan_params vk_params = pl_vulkan_default_params;
     vk_params.instance = sys->vk->instance->instance;
@@ -112,6 +126,9 @@ static int Open(vlc_object_t *obj)
     sys->pl_vk = pl_vulkan_create(ctx, &vk_params);
     if (!sys->pl_vk)
         goto error;
+
+    // TODO: Move this to context creation
+    sys->vk->vulkan = sys->pl_vk;
 
     struct pl_vulkan_swapchain_params swap_params = {
         .surface = sys->vk->surface,
@@ -156,7 +173,6 @@ static int Open(vlc_object_t *obj)
 error:
     pl_renderer_destroy(&sys->renderer);
     pl_swapchain_destroy(&sys->swapchain);
-    pl_vulkan_destroy(&sys->pl_vk);
 
     if (sys->vk != NULL)
         vlc_vk_Release(sys->vk);
@@ -175,7 +191,6 @@ static void Close(vlc_object_t *obj)
 
     pl_renderer_destroy(&sys->renderer);
     pl_swapchain_destroy(&sys->swapchain);
-    pl_vulkan_destroy(&sys->pl_vk);
 
     vlc_vk_Release(sys->vk);
 
@@ -184,13 +199,142 @@ static void Close(vlc_object_t *obj)
     free (sys);
 }
 
-static picture_pool_t *Pool(vout_display_t *vd, unsigned count)
+static void DestroyPicture(picture_t *pic)
 {
-    // TODO: use mapped buffers
+    struct picture_sys *picsys = pic->p_sys;
+    const struct pl_gpu *gpu = picsys->vk->vulkan->gpu;
+
+    pl_buf_destroy(gpu, &picsys->buf);
+    vlc_vk_Release(picsys->vk);
+}
+
+static picture_t *CreatePicture(vout_display_t *vd)
+{
     vout_display_sys_t *sys = vd->sys;
+    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+
+    struct picture_sys *picsys = calloc(1, sizeof(*picsys));
+    if (unlikely(picsys == NULL))
+        return NULL;
+
+    picture_t *pic = picture_NewFromResource(&vd->fmt, &(picture_resource_t) {
+        .p_sys = picsys,
+        .pf_destroy = DestroyPicture,
+    });
+
+    if (!pic) {
+        free(picsys);
+        return NULL;
+    }
+
+    picsys->vk = sys->vk;
+    vlc_vk_Hold(picsys->vk);
+
+    // XXX: needed since picture_NewFromResource override pic planes
+    // cf. opengl display.c
+    if (picture_Setup(pic, &vd->fmt) != VLC_SUCCESS) {
+        picture_Release(pic);
+        return NULL;
+    }
+
+    size_t buf_size = 0;
+    size_t offsets[PICTURE_PLANE_MAX];
+    for (int i = 0; i < pic->i_planes; i++)
+    {
+        const plane_t *p = &pic->p[i];
+
+        if (p->i_pitch < 0 || p->i_lines <= 0 ||
+            (size_t) p->i_pitch > SIZE_MAX/p->i_lines)
+        {
+            picture_Release(pic);
+            return NULL;
+        }
+        offsets[i] = buf_size;
+        buf_size += p->i_pitch * p->i_lines;
+    }
+
+    // Round up for alignment
+    buf_size = buf_size + 15 / 16 * 16;
+
+    picsys->buf = pl_buf_create(gpu, &(struct pl_buf_params) {
+        .type = PL_BUF_TEX_TRANSFER,
+        .size = buf_size,
+        .host_mapped = true,
+    });
+
+    if (!picsys->buf) {
+        picture_Release(pic);
+        return NULL;
+    }
+
+    for (int i = 0; i < pic->i_planes; ++i)
+        pic->p[i].p_pixels = (void *) &picsys->buf->data[offsets[i]];
+
+    return pic;
+}
+
+static picture_pool_t *Pool(vout_display_t *vd, unsigned requested_count)
+{
+    assert(requested_count <= VLCVK_MAX_BUFFERS);
+    vout_display_sys_t *sys = vd->sys;
+    if (sys->pool)
+        return sys->pool;
+
+    unsigned count;
+    picture_t *pictures[requested_count];
+    for (count = 0; count < requested_count; count++)
+    {
+        pictures[count] = CreatePicture(vd);
+        if (!pictures[count])
+            break;
+
+        struct picture_sys *picsys = pictures[count]->p_sys;
+        picsys->index = count;
+    }
+
+    if (count <= 1)
+        goto error;
+
+    sys->pool = picture_pool_New(count, pictures);
     if (!sys->pool)
-        sys->pool = picture_pool_NewFromFormat(&vd->fmt, count);
+        goto error;
+
     return sys->pool;
+
+error:
+    for (unsigned i = 0; i < count; i++) {
+        picture_Release(pictures[i]);
+        sys->pics[i] = NULL;
+    }
+
+    // Fallback to a regular memory pool
+    sys->pool = picture_pool_NewFromFormat(&vd->fmt, requested_count);
+    return sys->pool;
+}
+
+// Garbage collect all buffers that can be re-used
+static void PollBuffers(vout_display_t *vd)
+{
+    vout_display_sys_t *sys = vd->sys;
+    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+    unsigned long long list = sys->list;
+
+    // Release all pictures that are not used by the GPU anymore
+    while (list != 0) {
+        int i = ctz(list);
+        picture_t *pic = sys->pics[i];
+        assert(pic);
+        struct picture_sys *picsys = pic->p_sys;
+        assert(picsys);
+
+        if (!pl_buf_poll(gpu, picsys->buf, 0)) {
+            sys->list &= ~(1ULL << i);
+            sys->pics[i] = NULL;
+            picture_Release(pic);
+        }
+
+        list &= ~(1ULL << i);
+    }
 }
 
 static void PictureRender(vout_display_t *vd, picture_t *pic,
@@ -221,8 +365,11 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
 
     // Upload the image data for each plane
     struct pl_plane_data data[4];
-    if (!vlc_placebo_PlaneData(pic, data))
-        abort(); // XXX
+    struct picture_sys *picsys = pic->p_sys;
+    if (!vlc_placebo_PlaneData(pic, data, picsys ? picsys->buf : NULL)) {
+        // This should never happen, in theory
+        assert(!"Failed processing the picture_t into pl_plane_data!?");
+    }
 
     for (int i = 0; i < pic->i_planes; i++) {
         struct pl_plane *plane = &img.planes[i];
@@ -238,6 +385,19 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
             pl_chroma_location_offset(loc, &plane->shift_x, &plane->shift_y);
         }
     }
+
+    // If this was a mapped buffer, mark it as in use by the GPU
+    if (picsys) {
+        unsigned index = picsys->index;
+        if (sys->pics[index] == NULL) {
+            sys->list |= 1ULL << index;
+            sys->pics[index] = pic;
+            picture_Hold(pic);
+        }
+    }
+
+    // Garbage collect all previously used mapped buffers
+    PollBuffers(vd);
 
     struct pl_render_target target;
     pl_render_target_from_swapchain(&target, &frame);
@@ -272,8 +432,7 @@ done:
 
     if (!pl_swapchain_submit_frame(sys->swapchain)) {
         msg_Err(vd, "Failed rendering frame!");
-        return; // XXX: This is probably a serious failure. Can we request
-                // reinit or something?
+        return;
     }
 }
 

@@ -324,7 +324,8 @@ int vlc_placebo_PlaneFormat(const video_format_t *fmt, struct pl_plane_data data
     return desc->num_planes;
 }
 
-int vlc_placebo_PlaneData(const picture_t *pic, struct pl_plane_data data[4])
+int vlc_placebo_PlaneData(const picture_t *pic, struct pl_plane_data data[4],
+                          const struct pl_buf *buf)
 {
     int planes = vlc_placebo_PlaneFormat(&pic->format, data);
     if (!planes)
@@ -334,7 +335,14 @@ int vlc_placebo_PlaneData(const picture_t *pic, struct pl_plane_data data[4])
     for (int i = 0; i < planes; i++) {
         assert(data[i].height == pic->p[i].i_visible_lines);
         data[i].row_stride = pic->p[i].i_pitch;
-        data[i].pixels = pic->p[i].p_pixels;
+        if (buf) {
+            assert(buf->data);
+            assert(pic->p[i].p_pixels <= buf->data + buf->params.size);
+            data[i].buf = buf;
+            data[i].buf_offset = pic->p[i].p_pixels - (ptrdiff_t) buf->data;
+        } else {
+            data[i].pixels = pic->p[i].p_pixels;
+        }
     }
 
     return planes;

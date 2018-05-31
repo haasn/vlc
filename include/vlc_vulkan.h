@@ -54,6 +54,7 @@ struct vlc_vk_t
 
     struct pl_context *ctx;
     const struct pl_vk_inst *instance;
+    const struct pl_vulkan *vulkan;
     VkSurfaceKHR surface;
 
     // whether to enable standard validation layers

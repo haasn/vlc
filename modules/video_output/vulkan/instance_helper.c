@@ -59,6 +59,7 @@ void vk_DestroyInstance(vlc_vk_t *vk)
     if (!vk)
         return;
 
+    pl_vulkan_destroy(&vk->vulkan);
     pl_vk_inst_destroy(&vk->instance);
     pl_context_destroy(&vk->ctx);
 }
