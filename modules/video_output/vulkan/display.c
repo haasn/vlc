@@ -45,26 +45,6 @@
 
 #define VLCVK_MAX_BUFFERS 128
 
-// Plugin callbacks
-static int Open (vlc_object_t *);
-static void Close (vlc_object_t *);
-
-#define VK_TEXT N_("Vulkan surface extension")
-#define PROVIDER_LONGTEXT N_( \
-    "Extension which provides the Vulkan surface to use.")
-
-vlc_module_begin ()
-    set_shortname (N_("Vulkan"))
-    set_description (N_("Vulkan video output"))
-    set_category (CAT_VIDEO)
-    set_subcategory (SUBCAT_VIDEO_VOUT)
-    set_capability ("vout display", 300)
-    set_callbacks (Open, Close)
-    add_shortcut ("vulkan", "vk")
-    add_module ("vk", "vulkan", NULL,
-                VK_TEXT, PROVIDER_LONGTEXT)
-vlc_module_end ()
-
 struct vout_display_sys_t
 {
     vlc_vk_t *vk;
@@ -416,8 +396,54 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
         pl_tex_clear(gpu, frame.fbo, (float[4]){ 0.0, 0.0, 0.0, 0.0 });
     }
 
+    // Update the parameters from the module settings
+
+    // Debanding
+    struct pl_deband_params deband = pl_deband_default_params;
+    deband.iterations = var_InheritInteger(vd, "iterations");
+    deband.threshold = var_InheritFloat(vd, "threshold");
+    deband.radius = var_InheritFloat(vd, "radius");
+    deband.grain = var_InheritFloat(vd, "grain");
+    bool use_deband = deband.iterations > 0 || deband.grain > 0;
+
+    struct pl_sigmoid_params sigmoid = pl_sigmoid_default_params;
+    sigmoid.center = var_InheritFloat(vd, "sigmoid-center");
+    sigmoid.slope = var_InheritFloat(vd, "sigmoid-slope");
+    bool use_sigmoid = var_InheritBool(vd, "sigmoid");
+
+    struct pl_color_adjustment color_adjust = pl_color_adjustment_neutral;
+    color_adjust.brightness = var_InheritFloat(vd, "brightness");
+    color_adjust.contrast = var_InheritFloat(vd, "contrast");
+    color_adjust.saturation = var_InheritFloat(vd, "saturation");
+    color_adjust.hue = var_InheritFloat(vd, "hue");
+    color_adjust.gamma = var_InheritFloat(vd, "gamma");
+
+    struct pl_color_map_params color_map = pl_color_map_default_params;
+    color_map.intent = var_InheritInteger(vd, "intent");
+    color_map.tone_mapping_algo = var_InheritInteger(vd, "tone-mapping");
+    color_map.tone_mapping_param = var_InheritFloat(vd, "tone-mapping-param");
+    color_map.tone_mapping_desaturate = var_InheritFloat(vd, "tone-mapping-desat");
+    color_map.gamut_warning = var_InheritBool(vd, "gamut-warning");
+    color_map.peak_detect_frames = var_InheritInteger(vd, "peak-frames");
+    color_map.scene_threshold = var_InheritFloat(vd, "scene-threshold");
+
+    struct pl_dither_params dither = pl_dither_default_params;
+    int method = var_InheritInteger(vd, "dither");
+    bool use_dither = method >= 0;
+    dither.method = use_dither ? method : 0;
+    dither.lut_size = var_InheritInteger(vd, "dither-size");
+    dither.temporal = var_InheritBool(vd, "temporal-dither");
+
     struct pl_render_params params = pl_render_default_params;
-    // TODO: allow changing renderer settings
+    params.deband_params = use_deband ? &deband : NULL;
+    params.sigmoid_params = use_sigmoid ? &sigmoid : NULL;
+    params.color_adjustment = &color_adjust;
+    params.color_map_params = &color_map;
+    params.dither_params = use_dither ? &dither : NULL;
+    params.skip_anti_aliasing = var_InheritBool(vd, "skip-aa");
+    params.polar_cutoff = var_InheritFloat(vd, "polar-cutoff");
+    params.disable_linear_scaling = var_InheritBool(vd, "disable-linear");
+    params.disable_builtin_scalers = var_InheritBool(vd, "force-general");
 
     if (!pl_render_image(sys->renderer, &img, &target, &params)) {
         msg_Err(vd, "Failed rendering frame!");
@@ -472,3 +498,222 @@ static int Control(vout_display_t *vd, int query, va_list ap)
 
     return VLC_EGENERIC;
 }
+
+// Options
+
+#define VK_TEXT N_("Vulkan surface extension")
+#define PROVIDER_LONGTEXT N_( \
+    "Extension which provides the Vulkan surface to use.")
+
+#define DEBAND_ITER_TEXT "Debanding iterations"
+#define DEBAND_ITER_LONGTEXT "The number of debanding steps to perform per sample. Each step reduces a bit more banding, but takes time to compute. Note that the strength of each step falls off very quickly, so high numbers (>4) are practically useless. Setting this to 0 performs no debanding."
+
+#define DEBAND_THRESH_TEXT "Gradient threshold"
+#define DEBAND_THRESH_LONGTEXT "The debanding filter's cut-off threshold. Higher numbers increase the debanding strength dramatically, but progressively diminish image details."
+
+#define DEBAND_RADIUS_TEXT "Search radius"
+#define DEBAND_RADIUS_LONGTEXT "The debanding filter's initial radius. The radius increases linearly for each iteration. A higher radius will find more gradients, but a lower radius will smooth more aggressively."
+
+#define DEBAND_GRAIN_TEXT "Grain strength"
+#define DEBAND_GRAIN_LONGTEXT "Add some extra noise to the image. This significantly helps cover up remaining quantization artifacts. Higher numbers add more noise."
+
+#define SIGMOID_TEXT "Use sigmoidization"
+#define SIGMOID_LONGTEXT "If true, sigmoidizes the signal before upscaling. This helps prevent ringing artifacts. Not always in effect, even if enabled."
+
+#define SIGMOID_CENTER_TEXT "Sigmoid center"
+#define SIGMOID_CENTER_LONGTEXT "The center (bias) of the sigmoid curve."
+
+#define SIGMOID_SLOPE_TEXT "Sigmoid slope"
+#define SIGMOID_SLOPE_LONGTEXT "The slope (steepness) of the sigmoid curve."
+
+#define BRIGHTNESS_TEXT "Brightness boost"
+#define BRIGHTNESS_LONGTEXT "Raises the black level of the video signal."
+
+#define CONTRAST_TEXT "Contrast scale"
+#define CONTRAST_LONGTEXT "Scales the output intensity of the video signal."
+
+#define SATURATION_TEXT "Saturation gain"
+#define SATURATION_LONGTEXT "Scales the saturation (chromaticity) of the video signal."
+
+#define GAMMA_TEXT "Gamma factor"
+#define GAMMA_LONGTEXT "Makes the video signal's gamma curve steeper or shallower."
+
+#define HUE_TEXT "Hue shift"
+#define HUE_LONGTEXT "Rotates the hue vector of the video signal, specified in radians. Not effective for all sources."
+
+// XXX: code duplication with opengl/vout_helper.h
+#define INTENT_TEXT "Rendering intent for color conversion"
+#define INTENT_LONGTEXT "The mapping type used to convert between color spaces."
+
+static const int intent_values[] = {
+    PL_INTENT_PERCEPTUAL,
+    PL_INTENT_RELATIVE_COLORIMETRIC,
+    PL_INTENT_SATURATION,
+    PL_INTENT_ABSOLUTE_COLORIMETRIC,
+};
+
+static const char * const intent_text[] = {
+    "Perceptual",
+    "Relative colorimetric",
+    "Absolute colorimetric",
+    "Saturation",
+};
+
+#define TONEMAPPING_TEXT N_("Tone-mapping algorithm")
+#define TONEMAPPING_LONGTEXT N_("Algorithm to use when converting from wide gamut to standard gamut, or from HDR to SDR.")
+
+static const int tone_values[] = {
+    PL_TONE_MAPPING_HABLE,
+    PL_TONE_MAPPING_MOBIUS,
+    PL_TONE_MAPPING_REINHARD,
+    PL_TONE_MAPPING_GAMMA,
+    PL_TONE_MAPPING_LINEAR,
+    PL_TONE_MAPPING_CLIP,
+};
+
+static const char * const tone_text[] = {
+    "Hable (filmic mapping, recommended)",
+    "Mobius (linear + knee)",
+    "Reinhard (simple non-linear)",
+    "Gamma-Power law",
+    "Linear stretch (peak to peak)",
+    "Hard clip out-of-gamut",
+};
+
+#define TONEMAP_PARAM_TEXT "Tone-mapping parameter"
+#define TONEMAP_PARAM_LONGTEXT "This parameter can be used to tune the tone-mapping curve. Specifics depend on the curve used. If left as 0, the curve's preferred default is used."
+
+#define TONEMAP_DESAT_TEXT "Tone-mapping desaturation coefficient"
+#define TONEMAP_DESAT_LONGTEXT "How strongly to desaturate bright spectral colors towards white. 0.0 disables this behavior."
+
+#define GAMUT_WARN_TEXT "Highlight clipped pixels"
+#define GAMUT_WARN_LONGTEXT "Debugging tool to indicate which pixels were clipped as part of the tone mapping process."
+
+#define PEAK_FRAMES_TEXT "HDR peak detection buffer size"
+#define PEAK_FRAMES_LONGTEXT "How many input frames to consider when determining the brightness of HDR signals. Higher values result in a slower/smoother response to brightness level changes. Setting this to 0 disables peak detection entirely."
+
+#define SCENE_THRESHOLD_TEXT "HDR peak scene change threshold"
+#define SCENE_THRESHOLD_LONGTEXT "When using HDR peak detection, this sets a threshold for sudden brightness changes that should be considered as scene changes. This will result in the detected peak being immediately updated to the new value, rather than gradually being adjusted. Setting this to 0 disables this feature."
+
+#define DITHER_TEXT N_("Dithering algorithm")
+#define DITHER_LONGTEXT N_("The algorithm to use when dithering to a lower bit depth.")
+
+static const int dither_values[] = {
+    -1, // no dithering
+    PL_DITHER_BLUE_NOISE,
+    PL_DITHER_ORDERED_FIXED,
+    PL_DITHER_ORDERED_LUT,
+    PL_DITHER_WHITE_NOISE,
+};
+
+static const char * const dither_text[] = {
+    "Disabled",
+    "Blue noise (high quality)",
+    "Bayer matrix (ordered dither), 16x16 fixed size (fast)",
+    "Bayer matrix (ordered dither), any size",
+    "White noise (fast but low quality)",
+};
+
+#define DITHER_SIZE_TEXT "Dither LUT size (log 2)"
+#define DITHER_SIZE_LONGTEXT "Controls the size of the dither matrix, as a power of two (e.g. the default of 6 corresponds to a 64x64 matrix). Does not affect all algorithms."
+
+#define TEMPORAL_DITHER_TEXT "Temporal dithering"
+#define TEMPORAL_DITHER_LONGTEXT "Enables perturbing the dither matrix across frames. This reduces the persistence of dithering artifacts, but can cause flickering on some (cheap) LCD screens."
+
+#define POLAR_CUTOFF_TEXT "Cut-off value for polar samplers"
+#define POLAR_CUTOFF_LONGTEXT "As a micro-optimization, all samples with a weight below this value will be ignored. This reduces the need to perform unnecessary work that doesn't noticeably change the resulting image. Setting it to a value of 0.0 disables this optimization."
+
+#define SKIP_AA_TEXT "Disable anti-aliasing when downscaling"
+#define SKIP_AA_LONGTEXT "This will result in moiré artifacts and nasty, jagged pixels when downscaling, except for some very limited special cases (e.g. bilinear downsampling to exactly 0.5x). Significantly speeds up downscaling with high downscaling ratios."
+
+#define DISABLE_LINEAR_TEXT "Don't linearize before scaling"
+#define DISABLE_LINEAR_LONGTEXT "Normally, the image is converted to linear light before scaling (under certain conditions). Enabling this option disables this behavior."
+
+#define FORCE_GENERAL_TEXT "Force the use of general-purpose scalers"
+#define FORCE_GENERAL_LONGTEXT "Normally, certain special scalers will be replaced by faster versions instead of going through the general scaler architecture. Enabling this option disables these optimizations."
+
+vlc_module_begin () set_shortname (N_("Vulkan"))
+    set_description (N_("Vulkan video output"))
+    set_category (CAT_VIDEO)
+    set_subcategory (SUBCAT_VIDEO_VOUT)
+    set_capability ("vout display", 300)
+    set_callbacks (Open, Close)
+    add_shortcut ("vulkan", "vk")
+    add_module ("vk", "vulkan", NULL,
+                VK_TEXT, PROVIDER_LONGTEXT)
+
+    set_section(N_("Upscaling"), NULL)
+    // TODO: upscaler
+    add_bool("sigmoid", !!pl_render_default_params.sigmoid_params,
+            SIGMOID_TEXT, SIGMOID_LONGTEXT, true)
+    add_float_with_range("sigmoid-center", pl_sigmoid_default_params.center,
+            0., 1., SIGMOID_CENTER_TEXT, SIGMOID_CENTER_LONGTEXT, true)
+    add_float_with_range("sigmoid-slope", pl_sigmoid_default_params.slope,
+            1., 20., SIGMOID_SLOPE_TEXT, SIGMOID_SLOPE_LONGTEXT, true)
+
+    set_section(N_("Downscaling"), NULL)
+    // TODO: downscaler
+
+    set_section(N_("Debanding"), NULL)
+    add_integer("iterations", pl_deband_default_params.iterations,
+            DEBAND_ITER_TEXT, DEBAND_ITER_LONGTEXT, false)
+    add_float("threshold", pl_deband_default_params.threshold,
+            DEBAND_THRESH_TEXT, DEBAND_THRESH_LONGTEXT, false)
+    add_float("radius", pl_deband_default_params.radius,
+            DEBAND_RADIUS_TEXT, DEBAND_RADIUS_LONGTEXT, false)
+    add_float("grain", pl_deband_default_params.grain,
+            DEBAND_GRAIN_TEXT, DEBAND_GRAIN_LONGTEXT, false)
+
+    // XXX: This may not really make sense as a libplacebo-specified option.
+    // Does VLC expose some generalized/shared color mixer settings somewhere?
+    set_section(N_("Color adjustment"), NULL)
+    add_float_with_range("brightness", pl_color_adjustment_neutral.brightness,
+            -1., 1., BRIGHTNESS_TEXT, BRIGHTNESS_LONGTEXT, false)
+    add_float_with_range("saturation", pl_color_adjustment_neutral.saturation,
+            0., 10., SATURATION_TEXT, SATURATION_LONGTEXT, false)
+    add_float_with_range("contrast", pl_color_adjustment_neutral.contrast,
+            0., 10., CONTRAST_TEXT, CONTRAST_TEXT, false)
+    add_float_with_range("gamma", pl_color_adjustment_neutral.gamma,
+            0., 10., GAMMA_TEXT, GAMMA_LONGTEXT, false)
+    add_float_with_range("hue", pl_color_adjustment_neutral.hue,
+            -M_PI, M_PI, HUE_TEXT, HUE_LONGTEXT, false)
+
+    // XXX: code duplication with opengl/vout_helper.h
+    set_section(N_("Colorspace conversion"), NULL)
+    add_integer("intent", pl_color_map_default_params.intent,
+            INTENT_TEXT, INTENT_LONGTEXT, false)
+            change_integer_list(intent_values, intent_text)
+    add_integer("tone-mapping", pl_color_map_default_params.tone_mapping_algo,
+            TONEMAPPING_TEXT, TONEMAPPING_LONGTEXT, false)
+            change_integer_list(tone_values, tone_text)
+    add_float("tone-mapping-param", pl_color_map_default_params.tone_mapping_param,
+            TONEMAP_PARAM_TEXT, TONEMAP_PARAM_LONGTEXT, true)
+    add_float("tone-mapping-desat", pl_color_map_default_params.tone_mapping_desaturate,
+            TONEMAP_DESAT_TEXT, TONEMAP_DESAT_LONGTEXT, false)
+    add_bool("gamut-warning", false, GAMUT_WARN_TEXT, GAMUT_WARN_LONGTEXT, true)
+    add_integer_with_range("peak-frames", pl_color_map_default_params.peak_detect_frames,
+            0, 255, PEAK_FRAMES_TEXT, PEAK_FRAMES_LONGTEXT, false)
+    add_float_with_range("scene-threshold", pl_color_map_default_params.scene_threshold,
+            0., 10., SCENE_THRESHOLD_TEXT, SCENE_THRESHOLD_LONGTEXT, false)
+
+    set_section(N_("Dithering"), NULL)
+    add_integer("dither", pl_dither_default_params.method,
+            DITHER_TEXT, DITHER_LONGTEXT, false)
+            change_integer_list(dither_values, dither_text)
+    add_integer_with_range("dither-size", pl_dither_default_params.lut_size,
+            1, 8, DITHER_SIZE_TEXT, DITHER_SIZE_LONGTEXT, false)
+    add_bool("temporal-dither", pl_dither_default_params.temporal,
+            TEMPORAL_DITHER_TEXT, TEMPORAL_DITHER_LONGTEXT, false)
+
+    // TODO: support for ICC profiles / 3DLUTs.. we will need some way of loading
+    // this from the operating system / user
+
+    set_section(N_("Performance tweaks / debugging"), NULL)
+    add_bool("skip-aa", false, SKIP_AA_TEXT, SKIP_AA_LONGTEXT, false)
+    add_float_with_range("polar-cutoff", 0.001,
+            0., 1., POLAR_CUTOFF_TEXT, POLAR_CUTOFF_LONGTEXT, false)
+    //add_bool("overlay-direct", false, OVERLAY_DIRECT_TEXT, OVERLAY_DIRECT_LONGTEXT, false) // TODO: implement overlay first
+    add_bool("disable-linear", false, DISABLE_LINEAR_TEXT, DISABLE_LINEAR_LONGTEXT, false)
+    add_bool("force-general", false, FORCE_GENERAL_TEXT, FORCE_GENERAL_LONGTEXT, false)
+
+vlc_module_end ()
