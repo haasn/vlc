@@ -28,13 +28,13 @@
 #ifdef HAVE_LIBPLACEBO
 #include <libplacebo/shaders.h>
 #include <libplacebo/shaders/colorspace.h>
-#include <vlc_placebo.h>
 #endif
 
 #include <vlc_common.h>
 #include <vlc_memstream.h>
 #include "internal.h"
 #include "vout_helper.h"
+#include "../placebo_utils.h"
 
 #ifndef GL_RED
 # define GL_RED 0x1903

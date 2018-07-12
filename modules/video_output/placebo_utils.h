@@ -1,5 +1,5 @@
 /*****************************************************************************
- * vlc_fourcc.h: Definition of various libplacebo helpers
+ * placebo_utils.h: Definition of various libplacebo helpers
  *****************************************************************************
  * Copyright (C) 2018 Niklas Haas
  *
@@ -18,8 +18,8 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#ifndef VLC_PLACEBO_H
-#define VLC_PLACEBO_H 1
+#ifndef VLC_PLACEBO_UTILS_H
+#define VLC_PLACEBO_UTILS_H 1
 
 #include <vlc_common.h>
 #include <vlc_picture.h>
@@ -45,4 +45,4 @@ VLC_API int vlc_placebo_PlaneData(const picture_t *, struct pl_plane_data[4],
 // See if a given FourCC is physically supported by a given GPU
 VLC_API bool vlc_placebo_FormatSupported(const struct pl_gpu *, vlc_fourcc_t);
 
-#endif // VLC_PLACEBO_H
+#endif // VLC_PLACEBO_UTILS_H

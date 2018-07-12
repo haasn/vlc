@@ -27,7 +27,7 @@
 #include <stdlib.h>
 
 #include <vlc_common.h>
-#include <vlc_placebo.h>
+#include "placebo_utils.h"
 
 static void Log(void *priv, enum pl_log_level level, const char *msg)
 {

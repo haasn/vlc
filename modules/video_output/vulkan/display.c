@@ -33,10 +33,11 @@
 #include <assert.h>
 
 #include <vlc_common.h>
-#include <vlc_placebo.h>
 #include <vlc_plugin.h>
 #include <vlc_vout_display.h>
-#include <vlc_vulkan.h>
+
+#include "../placebo_utils.h"
+#include "vk_instance.h"
 
 #include <libplacebo/renderer.h>
 #include <libplacebo/utils/upload.h>
@@ -153,6 +154,7 @@ static int Open(vlc_object_t *obj)
 error:
     pl_renderer_destroy(&sys->renderer);
     pl_swapchain_destroy(&sys->swapchain);
+    pl_vulkan_destroy(&sys->pl_vk);
 
     if (sys->vk != NULL)
         vlc_vk_Release(sys->vk);

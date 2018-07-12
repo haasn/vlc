@@ -1,5 +1,5 @@
 /*****************************************************************************
- * vulkan.c: VLC Vulkan API
+ * vk_instance.c: Vulkan instance abstraction
  *****************************************************************************
  * Copyright (C) 2018 Niklas Haas
  *
@@ -27,16 +27,16 @@
 #include <stdlib.h>
 
 #include <vlc_common.h>
-#include <vlc_vulkan.h>
-#include "libvlc.h"
 #include <vlc_modules.h>
+
+#include "vk_instance.h"
 
 struct vlc_vk_priv_t
 {
     vlc_vk_t vk;
     atomic_uint ref_count;
 };
-#undef vlc_vk_Create
+
 /**
  * Creates a Vulkan surface (and its underlying instance).
  *
@@ -50,7 +50,7 @@ vlc_vk_t *vlc_vk_Create(struct vout_window_t *wnd, bool debug, const char *name)
     vlc_object_t *parent = (vlc_object_t *) wnd;
     struct vlc_vk_priv_t *vkpriv;
 
-    vkpriv = vlc_custom_create(parent, sizeof (*vkpriv), "vk");
+    vkpriv = vlc_object_create(parent, sizeof (*vkpriv));
     if (unlikely(vkpriv == NULL))
         return NULL;
 

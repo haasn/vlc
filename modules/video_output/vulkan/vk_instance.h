@@ -1,5 +1,5 @@
 /*****************************************************************************
- * vlc_vulkan.h: VLC Vulkan API
+ * vk_instance.h: Vulkan instance abstraction
  *****************************************************************************
  * Copyright (C) 2018 Niklas Haas
  *
@@ -18,33 +18,21 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#ifndef VLC_VK_H
-#define VLC_VK_H 1
+#ifndef VLC_VULKAN_INSTANCE_H
+#define VLC_VULKAN_INSTANCE_H
 
 #ifdef HAVE_CONFIG_H
 # include <config.h>
 #endif
 
-// FIXME: parametrize!
-#define VK_USE_PLATFORM_XLIB_KHR
-
 #include <vulkan/vulkan.h>
 #include <libplacebo/vulkan.h>
-
-/**
- * \file
- * This file defines Vulkan structures and functions.
- */
 
 struct vout_window_t;
 struct vout_window_cfg_t;
 
-/**
- * A VLC Vulkan surface (and its underlying instance)
- */
-typedef struct vlc_vk_t vlc_vk_t;
-
-struct vlc_vk_t
+// Shared struct for vulkan instance / surface / device state
+typedef struct vlc_vk_t
 {
     struct vlc_common_members obj;
 
@@ -59,10 +47,10 @@ struct vlc_vk_t
 
     // whether to enable standard validation layers
     bool use_debug;
-};
+} vlc_vk_t;
 
-VLC_API vlc_vk_t *vlc_vk_Create(struct vout_window_t *, bool, const char *) VLC_USED;
-VLC_API void vlc_vk_Release(vlc_vk_t *);
-VLC_API void vlc_vk_Hold(vlc_vk_t *);
+vlc_vk_t *vlc_vk_Create(struct vout_window_t *, bool, const char *) VLC_USED;
+void vlc_vk_Release(vlc_vk_t *);
+void vlc_vk_Hold(vlc_vk_t *);
 
-#endif /* VLC_VK_H */
+#endif // VLC_VULKAN_INSTANCE_H

@@ -4,6 +4,7 @@ vout_LTLIBRARIES =
 EXTRA_DIST += video_output/README
 
 OPENGL_COMMONSOURCES = video_output/opengl/vout_helper.c \
+	video_output/placebo_utils.c \
 	video_output/opengl/vout_helper.h video_output/opengl/converter.h \
 	video_output/opengl/internal.h video_output/opengl/fragment_shaders.c \
 	video_output/opengl/converter_sw.c
@@ -123,7 +124,8 @@ endif # HAVE_GL
 
 ### Vulkan ###
 
-VULKAN_COMMONSOURCES = video_output/vulkan/instance_helper.c
+VULKAN_COMMONSOURCES = video_output/vulkan/vk_instance.c \
+		       video_output/placebo_utils.c
 
 VULKAN_COMMONCLFAGS = $(VULKAN_CFLAGS) $(LIBPLACEBO_CFLAGS)
 VULKAN_COMMONLIBS = $(VULKAN_LIBS) $(LIBPLACEBO_LIBS)
@@ -179,8 +181,9 @@ libglx_plugin_la_SOURCES = video_output/glx.c
 libglx_plugin_la_CFLAGS = $(AM_CFLAGS) $(GL_CFLAGS)
 libglx_plugin_la_LIBADD = $(GL_LIBS) $(X_LIBS) $(X_PRE_LIBS) -lX11
 
-libvk_x11_plugin_la_SOURCES = $(VULKAN_COMMONSOURCES) video_output/vulkan/x11.c
-libvk_x11_plugin_la_CFLAGS = $(AM_CFLAGS) $(VULKAN_COMMONCFLAGS)
+libvk_x11_plugin_la_SOURCES = $(VULKAN_COMMONSOURCES) video_output/vulkan/surface.c
+libvk_x11_plugin_la_CFLAGS = $(AM_CFLAGS) $(VULKAN_COMMONCFLAGS) \
+			     -DVK_USE_PLATFORM_XLIB_KHR
 libvk_x11_plugin_la_LIBADD = $(VULKAN_COMMONLIBS) $(X_LIBS) $(X_PRE_LIBS) -lX11
 
 if HAVE_XCB

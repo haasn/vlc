@@ -1,6 +1,6 @@
 /**
- * @file xlib.c
- * @brief Vulkan Xlib extension module
+ * @file surface.c
+ * @brief Vulkan platform-specific surface extension module
  */
 /*****************************************************************************
  * Copyright © 2018 Niklas Haas
@@ -29,17 +29,24 @@
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
-#include <vlc_vulkan.h>
 #include <vlc_vout_window.h>
-#include <vlc_xlib.h>
 
-#include "instance_helper.h"
+#ifdef VK_USE_PLATFORM_XLIB_KHR
+#include <vlc_xlib.h>
+#define MODULE_NAME N_("VkXlib")
+#define MODULE_DESC N_("Xlib extension for Vulkan")
+#endif
+
+#include "../placebo_utils.h"
+#include "vk_instance.h"
 
 static int Open (vlc_object_t *obj)
 {
     vlc_vk_t *vk = (vlc_vk_t *) obj;
-    VkInstance inst = (VkInstance) NULL;
+    const VkInstance *vkinst = &vk->instance->instance;
+    const char *surf_extension;
 
+#ifdef VK_USE_PLATFORM_XLIB_KHR
     if (vk->window->type != VOUT_WINDOW_TYPE_XID || !vlc_xlib_init(obj))
         return VLC_EGENERIC;
 
@@ -48,45 +55,71 @@ static int Open (vlc_object_t *obj)
     if (dpy == NULL)
         return VLC_EGENERIC;
 
+    surf_extension = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
+#endif
+
     // Initialize Vulkan instance
-    int ret = vk_CreateInstance(vk, VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
-    if (ret != VK_SUCCESS)
+    vk->ctx = vlc_placebo_Create(VLC_OBJECT(vk));
+    if (!vk->ctx)
         goto error;
 
+    vk->instance = pl_vk_inst_create(vk->ctx, &(struct pl_vk_inst_params) {
+        .debug = vk->use_debug,
+        .extensions = (const char *[]) {
+            VK_KHR_SURFACE_EXTENSION_NAME,
+            surf_extension,
+        },
+        .num_extensions = 2,
+    });
+
+    // Create the platform-specific surface object
+#ifdef VK_USE_PLATFORM_XLIB_KHR
     VkXlibSurfaceCreateInfoKHR xinfo = {
          .sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
          .dpy = dpy,
          .window = (Window) vk->window->handle.xid,
     };
 
-    inst = vk->instance->instance;
-    VkResult res = vkCreateXlibSurfaceKHR(inst, &xinfo, NULL, &vk->surface);
+    VkResult res = vkCreateXlibSurfaceKHR(*vkinst, &xinfo, NULL, &vk->surface);
+#endif
+
     if (res != VK_SUCCESS)
         goto error;
 
     return VLC_SUCCESS;
 
 error:
-    if (inst)
-        vkDestroySurfaceKHR(inst, vk->surface, NULL);
-    vk_DestroyInstance(vk);
-    XCloseDisplay(dpy);
+    if (vk->surface)
+        vkDestroySurfaceKHR(*vkinst, vk->surface, NULL);
+
+    pl_vk_inst_destroy(&vk->instance);
+    pl_context_destroy(&vk->ctx);
+
+#ifdef VK_USE_PLATFORM_XLIB_KHR
+    if (dpy)
+        XCloseDisplay(dpy);
+#endif
+
     return VLC_EGENERIC;
 }
 
 static void Close (vlc_object_t *obj)
 {
     vlc_vk_t *vk = (vlc_vk_t *) obj;
-    Display *dpy = vk->sys;
 
     vkDestroySurfaceKHR(vk->instance->instance, vk->surface, NULL);
-    vk_DestroyInstance(vk);
+    pl_vk_inst_destroy(&vk->instance);
+    pl_context_destroy(&vk->ctx);
+
+#ifdef VK_USE_PLATFORM_XLIB_KHR
+    Display *dpy = vk->sys;
     XCloseDisplay(dpy);
+#endif
 }
 
 vlc_module_begin ()
-    set_shortname (N_("VkXlib"))
-    set_description (N_("Xlib extension for Vulkan"))
+    set_shortname (MODULE_NAME)
+    set_description (MODULE_DESC)
     set_category (CAT_VIDEO)
     set_subcategory (SUBCAT_VIDEO_VOUT)
     set_capability ("vulkan", 10)
