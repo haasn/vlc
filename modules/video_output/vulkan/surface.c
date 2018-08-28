@@ -43,7 +43,6 @@
 static int Open (vlc_object_t *obj)
 {
     vlc_vk_t *vk = (vlc_vk_t *) obj;
-    const VkInstance *vkinst = &vk->instance->instance;
     const char *surf_extension;
 
 #ifdef VK_USE_PLATFORM_XLIB_KHR
@@ -73,6 +72,7 @@ static int Open (vlc_object_t *obj)
     });
 
     // Create the platform-specific surface object
+    const VkInstance *vkinst = &vk->instance->instance;
 #ifdef VK_USE_PLATFORM_XLIB_KHR
     VkXlibSurfaceCreateInfoKHR xinfo = {
          .sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,

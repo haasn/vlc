@@ -62,6 +62,14 @@ struct vout_display_sys_t
     // Mapped buffers
     picture_t *pics[VLCVK_MAX_BUFFERS];
     unsigned long long list; // bitset of available pictures
+
+    // Storage for rendering parameters
+    struct pl_deband_params deband;
+    struct pl_sigmoid_params sigmoid;
+    struct pl_color_adjustment color_adjust;
+    struct pl_color_map_params color_map;
+    struct pl_dither_params dither;
+    struct pl_render_params params;
 };
 
 struct picture_sys
@@ -76,6 +84,63 @@ static picture_pool_t *Pool(vout_display_t *, unsigned);
 static void PictureRender(vout_display_t *, picture_t *, subpicture_t *, mtime_t);
 static void PictureDisplay(vout_display_t *, picture_t *, subpicture_t *);
 static int Control(vout_display_t *, int, va_list);
+static void PollBuffers(vout_display_t *);
+
+// Update the renderer settings based on the current configuration.
+//
+// XXX: This could be called every time the parameters change, but currently
+// VLC does not allow that - so we're stuck with doing it once on Open().
+// Should be changed as soon as it's possible!
+static void UpdateParams(vout_display_t *vd)
+{
+    vout_display_sys_t *sys = vd->sys;
+
+    sys->deband = pl_deband_default_params;
+    sys->deband.iterations = var_InheritInteger(vd, "iterations");
+    sys->deband.threshold = var_InheritFloat(vd, "threshold");
+    sys->deband.radius = var_InheritFloat(vd, "radius");
+    sys->deband.grain = var_InheritFloat(vd, "grain");
+    bool use_deband = sys->deband.iterations > 0 || sys->deband.grain > 0;
+
+    sys->sigmoid = pl_sigmoid_default_params;
+    sys->sigmoid.center = var_InheritFloat(vd, "sigmoid-center");
+    sys->sigmoid.slope = var_InheritFloat(vd, "sigmoid-slope");
+    bool use_sigmoid = var_InheritBool(vd, "sigmoid");
+
+    sys->color_adjust = pl_color_adjustment_neutral;
+    sys->color_adjust.brightness = var_InheritFloat(vd, "vkbrightness");
+    sys->color_adjust.contrast = var_InheritFloat(vd, "vkcontrast");
+    sys->color_adjust.saturation = var_InheritFloat(vd, "vksaturation");
+    sys->color_adjust.hue = var_InheritFloat(vd, "vkhue");
+    sys->color_adjust.gamma = var_InheritFloat(vd, "vkgamma");
+
+    sys->color_map = pl_color_map_default_params;
+    sys->color_map.intent = var_InheritInteger(vd, "intent");
+    sys->color_map.tone_mapping_algo = var_InheritInteger(vd, "tone-mapping");
+    sys->color_map.tone_mapping_param = var_InheritFloat(vd, "tone-mapping-param");
+    sys->color_map.tone_mapping_desaturate = var_InheritFloat(vd, "tone-mapping-desat");
+    sys->color_map.gamut_warning = var_InheritBool(vd, "gamut-warning");
+    sys->color_map.peak_detect_frames = var_InheritInteger(vd, "peak-frames");
+    sys->color_map.scene_threshold = var_InheritFloat(vd, "scene-threshold");
+
+    sys->dither = pl_dither_default_params;
+    int method = var_InheritInteger(vd, "dither");
+    bool use_dither = method >= 0;
+    sys->dither.method = use_dither ? method : 0;
+    sys->dither.lut_size = var_InheritInteger(vd, "dither-size");
+    sys->dither.temporal = var_InheritBool(vd, "temporal-dither");
+
+    sys->params = pl_render_default_params;
+    sys->params.deband_params = use_deband ? &sys->deband : NULL;
+    sys->params.sigmoid_params = use_sigmoid ? &sys->sigmoid : NULL;
+    sys->params.color_adjustment = &sys->color_adjust;
+    sys->params.color_map_params = &sys->color_map;
+    sys->params.dither_params = use_dither ? &sys->dither : NULL;
+    sys->params.skip_anti_aliasing = var_InheritBool(vd, "skip-aa");
+    sys->params.polar_cutoff = var_InheritFloat(vd, "polar-cutoff");
+    sys->params.disable_linear_scaling = var_InheritBool(vd, "disable-linear");
+    sys->params.disable_builtin_scalers = var_InheritBool(vd, "force-general");
+}
 
 // Allocates a Vulkan surface and instance for video output.
 static int Open(vlc_object_t *obj)
@@ -149,6 +214,8 @@ static int Open(vlc_object_t *obj)
     vd->prepare = PictureRender;
     vd->display = PictureDisplay;
     vd->control = Control;
+
+    UpdateParams(vd);
     return VLC_SUCCESS;
 
 error:
@@ -174,10 +241,12 @@ static void Close(vlc_object_t *obj)
     pl_renderer_destroy(&sys->renderer);
     pl_swapchain_destroy(&sys->swapchain);
 
-    vlc_vk_Release(sys->vk);
-
+    PollBuffers(vd);
     if (sys->pool)
         picture_pool_Release(sys->pool);
+
+    pl_vulkan_destroy(&sys->pl_vk);
+    vlc_vk_Release(sys->vk);
     free (sys);
 }
 
@@ -381,6 +450,9 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
     // Garbage collect all previously used mapped buffers
     PollBuffers(vd);
 
+    // Upload the image data for each subpicture region
+    // TODO
+
     struct pl_render_target target;
     pl_render_target_from_swapchain(&target, &frame);
     // TODO: set overlays based on the subpictures
@@ -398,56 +470,8 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
         pl_tex_clear(gpu, frame.fbo, (float[4]){ 0.0, 0.0, 0.0, 0.0 });
     }
 
-    // Update the parameters from the module settings
-
-    // Debanding
-    struct pl_deband_params deband = pl_deband_default_params;
-    deband.iterations = var_InheritInteger(vd, "iterations");
-    deband.threshold = var_InheritFloat(vd, "threshold");
-    deband.radius = var_InheritFloat(vd, "radius");
-    deband.grain = var_InheritFloat(vd, "grain");
-    bool use_deband = deband.iterations > 0 || deband.grain > 0;
-
-    struct pl_sigmoid_params sigmoid = pl_sigmoid_default_params;
-    sigmoid.center = var_InheritFloat(vd, "sigmoid-center");
-    sigmoid.slope = var_InheritFloat(vd, "sigmoid-slope");
-    bool use_sigmoid = var_InheritBool(vd, "sigmoid");
-
-    struct pl_color_adjustment color_adjust = pl_color_adjustment_neutral;
-    color_adjust.brightness = var_InheritFloat(vd, "brightness");
-    color_adjust.contrast = var_InheritFloat(vd, "contrast");
-    color_adjust.saturation = var_InheritFloat(vd, "saturation");
-    color_adjust.hue = var_InheritFloat(vd, "hue");
-    color_adjust.gamma = var_InheritFloat(vd, "gamma");
-
-    struct pl_color_map_params color_map = pl_color_map_default_params;
-    color_map.intent = var_InheritInteger(vd, "intent");
-    color_map.tone_mapping_algo = var_InheritInteger(vd, "tone-mapping");
-    color_map.tone_mapping_param = var_InheritFloat(vd, "tone-mapping-param");
-    color_map.tone_mapping_desaturate = var_InheritFloat(vd, "tone-mapping-desat");
-    color_map.gamut_warning = var_InheritBool(vd, "gamut-warning");
-    color_map.peak_detect_frames = var_InheritInteger(vd, "peak-frames");
-    color_map.scene_threshold = var_InheritFloat(vd, "scene-threshold");
-
-    struct pl_dither_params dither = pl_dither_default_params;
-    int method = var_InheritInteger(vd, "dither");
-    bool use_dither = method >= 0;
-    dither.method = use_dither ? method : 0;
-    dither.lut_size = var_InheritInteger(vd, "dither-size");
-    dither.temporal = var_InheritBool(vd, "temporal-dither");
-
-    struct pl_render_params params = pl_render_default_params;
-    params.deband_params = use_deband ? &deband : NULL;
-    params.sigmoid_params = use_sigmoid ? &sigmoid : NULL;
-    params.color_adjustment = &color_adjust;
-    params.color_map_params = &color_map;
-    params.dither_params = use_dither ? &dither : NULL;
-    params.skip_anti_aliasing = var_InheritBool(vd, "skip-aa");
-    params.polar_cutoff = var_InheritFloat(vd, "polar-cutoff");
-    params.disable_linear_scaling = var_InheritBool(vd, "disable-linear");
-    params.disable_builtin_scalers = var_InheritBool(vd, "force-general");
-
-    if (!pl_render_image(sys->renderer, &img, &target, &params)) {
+    // Dispatch the actual image rendering with the pre-configured parameters
+    if (!pl_render_image(sys->renderer, &img, &target, &sys->params)) {
         msg_Err(vd, "Failed rendering frame!");
         failed = true;
         goto done;
@@ -467,6 +491,8 @@ done:
 static void PictureDisplay(vout_display_t *vd, picture_t *pic, subpicture_t *subpicture)
 {
     picture_Release(pic);
+    if (subpicture)
+        subpicture_Delete(subpicture);
 
     vout_display_sys_t *sys = vd->sys;
     pl_swapchain_swap_buffers(sys->swapchain);
@@ -668,16 +694,17 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
 
     // XXX: This may not really make sense as a libplacebo-specified option.
     // Does VLC expose some generalized/shared color mixer settings somewhere?
+    // TODO: turns out it does, need to fix
     set_section(N_("Color adjustment"), NULL)
-    add_float_with_range("brightness", pl_color_adjustment_neutral.brightness,
+    add_float_with_range("vkbrightness", pl_color_adjustment_neutral.brightness,
             -1., 1., BRIGHTNESS_TEXT, BRIGHTNESS_LONGTEXT, false)
-    add_float_with_range("saturation", pl_color_adjustment_neutral.saturation,
+    add_float_with_range("vksaturation", pl_color_adjustment_neutral.saturation,
             0., 10., SATURATION_TEXT, SATURATION_LONGTEXT, false)
-    add_float_with_range("contrast", pl_color_adjustment_neutral.contrast,
+    add_float_with_range("vkcontrast", pl_color_adjustment_neutral.contrast,
             0., 10., CONTRAST_TEXT, CONTRAST_TEXT, false)
-    add_float_with_range("gamma", pl_color_adjustment_neutral.gamma,
+    add_float_with_range("vkgamma", pl_color_adjustment_neutral.gamma,
             0., 10., GAMMA_TEXT, GAMMA_LONGTEXT, false)
-    add_float_with_range("hue", pl_color_adjustment_neutral.hue,
+    add_float_with_range("vkhue", pl_color_adjustment_neutral.hue,
             -M_PI, M_PI, HUE_TEXT, HUE_LONGTEXT, false)
 
     // XXX: code duplication with opengl/vout_helper.h
