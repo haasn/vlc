@@ -64,6 +64,8 @@ struct vout_display_sys_t
     unsigned long long list; // bitset of available pictures
 
     // Storage for rendering parameters
+    struct pl_filter_config upscaler;
+    struct pl_filter_config downscaler;
     struct pl_deband_params deband;
     struct pl_sigmoid_params sigmoid;
     struct pl_color_adjustment color_adjust;
@@ -85,62 +87,7 @@ static void PictureRender(vout_display_t *, picture_t *, subpicture_t *, mtime_t
 static void PictureDisplay(vout_display_t *, picture_t *, subpicture_t *);
 static int Control(vout_display_t *, int, va_list);
 static void PollBuffers(vout_display_t *);
-
-// Update the renderer settings based on the current configuration.
-//
-// XXX: This could be called every time the parameters change, but currently
-// VLC does not allow that - so we're stuck with doing it once on Open().
-// Should be changed as soon as it's possible!
-static void UpdateParams(vout_display_t *vd)
-{
-    vout_display_sys_t *sys = vd->sys;
-
-    sys->deband = pl_deband_default_params;
-    sys->deband.iterations = var_InheritInteger(vd, "iterations");
-    sys->deband.threshold = var_InheritFloat(vd, "threshold");
-    sys->deband.radius = var_InheritFloat(vd, "radius");
-    sys->deband.grain = var_InheritFloat(vd, "grain");
-    bool use_deband = sys->deband.iterations > 0 || sys->deband.grain > 0;
-
-    sys->sigmoid = pl_sigmoid_default_params;
-    sys->sigmoid.center = var_InheritFloat(vd, "sigmoid-center");
-    sys->sigmoid.slope = var_InheritFloat(vd, "sigmoid-slope");
-    bool use_sigmoid = var_InheritBool(vd, "sigmoid");
-
-    sys->color_adjust = pl_color_adjustment_neutral;
-    sys->color_adjust.brightness = var_InheritFloat(vd, "vkbrightness");
-    sys->color_adjust.contrast = var_InheritFloat(vd, "vkcontrast");
-    sys->color_adjust.saturation = var_InheritFloat(vd, "vksaturation");
-    sys->color_adjust.hue = var_InheritFloat(vd, "vkhue");
-    sys->color_adjust.gamma = var_InheritFloat(vd, "vkgamma");
-
-    sys->color_map = pl_color_map_default_params;
-    sys->color_map.intent = var_InheritInteger(vd, "intent");
-    sys->color_map.tone_mapping_algo = var_InheritInteger(vd, "tone-mapping");
-    sys->color_map.tone_mapping_param = var_InheritFloat(vd, "tone-mapping-param");
-    sys->color_map.tone_mapping_desaturate = var_InheritFloat(vd, "tone-mapping-desat");
-    sys->color_map.gamut_warning = var_InheritBool(vd, "gamut-warning");
-    sys->color_map.peak_detect_frames = var_InheritInteger(vd, "peak-frames");
-    sys->color_map.scene_threshold = var_InheritFloat(vd, "scene-threshold");
-
-    sys->dither = pl_dither_default_params;
-    int method = var_InheritInteger(vd, "dither");
-    bool use_dither = method >= 0;
-    sys->dither.method = use_dither ? method : 0;
-    sys->dither.lut_size = var_InheritInteger(vd, "dither-size");
-    sys->dither.temporal = var_InheritBool(vd, "temporal-dither");
-
-    sys->params = pl_render_default_params;
-    sys->params.deband_params = use_deband ? &sys->deband : NULL;
-    sys->params.sigmoid_params = use_sigmoid ? &sys->sigmoid : NULL;
-    sys->params.color_adjustment = &sys->color_adjust;
-    sys->params.color_map_params = &sys->color_map;
-    sys->params.dither_params = use_dither ? &sys->dither : NULL;
-    sys->params.skip_anti_aliasing = var_InheritBool(vd, "skip-aa");
-    sys->params.polar_cutoff = var_InheritFloat(vd, "polar-cutoff");
-    sys->params.disable_linear_scaling = var_InheritBool(vd, "disable-linear");
-    sys->params.disable_builtin_scalers = var_InheritBool(vd, "force-general");
-}
+static void UpdateParams(vout_display_t *);
 
 // Allocates a Vulkan surface and instance for video output.
 static int Open(vlc_object_t *obj)
@@ -533,8 +480,239 @@ static int Control(vout_display_t *vd, int query, va_list ap)
 #define PROVIDER_LONGTEXT N_( \
     "Extension which provides the Vulkan surface to use.")
 
+enum {
+    SCALE_BUILTIN = 0,
+    SCALE_SPLINE16,
+    SCALE_SPLINE36,
+    SCALE_SPLINE64,
+    SCALE_MITCHELL,
+    SCALE_BICUBIC,
+    SCALE_EWA_LANCZOS,
+    SCALE_NEAREST,
+    SCALE_BILINEAR,
+    SCALE_GAUSSIAN,
+    SCALE_LANCZOS,
+    SCALE_GINSENG,
+    SCALE_EWA_GINSENG,
+    SCALE_EWA_HANN,
+    SCALE_HAASNSOFT,
+    SCALE_CATMULL_ROM,
+    SCALE_ROBIDOUX,
+    SCALE_ROBIDOUXSHARP,
+    SCALE_EWA_ROBIDOUX,
+    SCALE_EWA_ROBIDOUXSHARP,
+    SCALE_SINC,
+    SCALE_EWA_JINC,
+    SCALE_CUSTOM,
+};
+
+static const int scale_values[] = {
+    SCALE_BUILTIN,
+    SCALE_SPLINE16,
+    SCALE_SPLINE36,
+    SCALE_SPLINE64,
+    SCALE_MITCHELL,
+    SCALE_BICUBIC,
+    SCALE_EWA_LANCZOS,
+    SCALE_NEAREST,
+    SCALE_BILINEAR,
+    SCALE_GAUSSIAN,
+    SCALE_LANCZOS,
+    SCALE_GINSENG,
+    SCALE_EWA_GINSENG,
+    SCALE_EWA_HANN,
+    SCALE_HAASNSOFT,
+    SCALE_CATMULL_ROM,
+    SCALE_ROBIDOUX,
+    SCALE_ROBIDOUXSHARP,
+    SCALE_EWA_ROBIDOUX,
+    SCALE_EWA_ROBIDOUXSHARP,
+    SCALE_SINC,
+    SCALE_EWA_JINC,
+    SCALE_CUSTOM,
+};
+
+static const char * const scale_text[] = {
+    "Built-in / fixed function (fast)",
+    "Spline 2 taps",
+    "Spline 3 taps (recommended upscaler)",
+    "Spline 4 taps",
+    "Mitchell-Netravali (recommended downscaler)",
+    "Bicubic",
+    "Jinc / EWA Lanczos 3 taps (high quality, slow)",
+    "Nearest neighbour",
+    "Bilinear",
+    "Gaussian",
+    "Lanczos 3 taps",
+    "Ginseng 3 taps",
+    "EWA Ginseng",
+    "EWA Hann",
+    "HaasnSoft (blurred EWA Hann)",
+    "Catmull-Rom",
+    "Robidoux",
+    "RobidouxSharp",
+    "EWA Robidoux",
+    "EWA RobidouxSharp",
+    "Unwindowed sinc (clipped)",
+    "Unwindowed EWA Jinc (clipped)",
+    "Custom (see below)",
+};
+
+static const struct pl_filter_config *scale_config[] = {
+    [SCALE_BUILTIN]             = NULL,
+    [SCALE_SPLINE16]            = &pl_filter_spline16,
+    [SCALE_SPLINE36]            = &pl_filter_spline36,
+    [SCALE_SPLINE64]            = &pl_filter_spline64,
+    [SCALE_NEAREST]             = &pl_filter_box,
+    [SCALE_BILINEAR]            = &pl_filter_triangle,
+    [SCALE_GAUSSIAN]            = &pl_filter_gaussian,
+    [SCALE_SINC]                = &pl_filter_sinc,
+    [SCALE_LANCZOS]             = &pl_filter_lanczos,
+    [SCALE_GINSENG]             = &pl_filter_ginseng,
+    [SCALE_EWA_JINC]            = &pl_filter_ewa_jinc,
+    [SCALE_EWA_LANCZOS]         = &pl_filter_ewa_lanczos,
+    [SCALE_EWA_GINSENG]         = &pl_filter_ewa_ginseng,
+    [SCALE_EWA_HANN]            = &pl_filter_ewa_hann,
+    [SCALE_HAASNSOFT]           = &pl_filter_haasnsoft,
+    [SCALE_BICUBIC]             = &pl_filter_bicubic,
+    [SCALE_CATMULL_ROM]         = &pl_filter_catmull_rom,
+    [SCALE_MITCHELL]            = &pl_filter_mitchell,
+    [SCALE_ROBIDOUX]            = &pl_filter_robidoux,
+    [SCALE_ROBIDOUXSHARP]       = &pl_filter_robidouxsharp,
+    [SCALE_EWA_ROBIDOUX]        = &pl_filter_robidoux,
+    [SCALE_EWA_ROBIDOUXSHARP]   = &pl_filter_robidouxsharp,
+    [SCALE_CUSTOM]              = NULL,
+};
+
+#define UPSCALER_PRESET_TEXT "Upscaler preset"
+#define DOWNSCALER_PRESET_TEXT "Downscaler preset"
+#define SCALER_PRESET_LONGTEXT "Choose from one of the built-in scaler presets. If set to custom, you can choose your own combination of kernel/window functions."
+
+#define LUT_ENTRIES_TEXT "Scaler LUT size"
+#define LUT_ENTRIES_LONGTEXT "Size of the LUT texture used for up/downscalers that require one. Reducing this may boost performance at the cost of quality."
+
+#define ANTIRING_TEXT "Anti-ringing strength"
+#define ANTIRING_LONGTEXT "Enables anti-ringing for non-polar filters. A value of 1.0 completely removes ringing, a value of 0.0 is a no-op."
+
+enum {
+    FILTER_NONE = 0,
+    FILTER_BOX,
+    FILTER_TRIANGLE,
+    FILTER_HANN,
+    FILTER_HAMMING,
+    FILTER_WELCH,
+    FILTER_KAISER,
+    FILTER_BLACKMAN,
+    FILTER_GAUSSIAN,
+    FILTER_SINC,
+    FILTER_JINC,
+    FILTER_SPHINX,
+    FILTER_BCSPLINE,
+    FILTER_CATMULL_ROM,
+    FILTER_MITCHELL,
+    FILTER_ROBIDOUX,
+    FILTER_ROBIDOUXSHARP,
+    FILTER_BICUBIC,
+    FILTER_SPLINE16,
+    FILTER_SPLINE36,
+    FILTER_SPLINE64,
+};
+
+static const int filter_values[] = {
+    FILTER_NONE,
+    FILTER_BOX,
+    FILTER_TRIANGLE,
+    FILTER_HANN,
+    FILTER_HAMMING,
+    FILTER_WELCH,
+    FILTER_KAISER,
+    FILTER_BLACKMAN,
+    FILTER_GAUSSIAN,
+    FILTER_SINC,
+    FILTER_JINC,
+    FILTER_SPHINX,
+    FILTER_BCSPLINE,
+    FILTER_CATMULL_ROM,
+    FILTER_MITCHELL,
+    FILTER_ROBIDOUX,
+    FILTER_ROBIDOUXSHARP,
+    FILTER_BICUBIC,
+    FILTER_SPLINE16,
+    FILTER_SPLINE36,
+    FILTER_SPLINE64,
+};
+
+static const char * const filter_text[] = {
+    "None",
+    "Box / Nearest",
+    "Triangle / Linear",
+    "Hann",
+    "Hamming",
+    "Welch",
+    "Kaiser",
+    "Blackman",
+    "Gaussian",
+    "Sinc",
+    "Jinc",
+    "Sphinx",
+    "BC spline",
+    "Catmull-Rom",
+    "Mitchell-Netravali",
+    "Robidoux",
+    "RobidouxSharp",
+    "Bicubic",
+    "Spline16",
+    "Spline36",
+    "Spline64",
+};
+
+static const struct pl_filter_function *filter_fun[] = {
+    [FILTER_NONE]           = NULL,
+    [FILTER_BOX]            = &pl_filter_function_box,
+    [FILTER_TRIANGLE]       = &pl_filter_function_triangle,
+    [FILTER_HANN]           = &pl_filter_function_hann,
+    [FILTER_HAMMING]        = &pl_filter_function_hamming,
+    [FILTER_WELCH]          = &pl_filter_function_welch,
+    [FILTER_KAISER]         = &pl_filter_function_kaiser,
+    [FILTER_BLACKMAN]       = &pl_filter_function_blackman,
+    [FILTER_GAUSSIAN]       = &pl_filter_function_gaussian,
+    [FILTER_SINC]           = &pl_filter_function_sinc,
+    [FILTER_JINC]           = &pl_filter_function_jinc,
+    [FILTER_SPHINX]         = &pl_filter_function_sphinx,
+    [FILTER_BCSPLINE]       = &pl_filter_function_bcspline,
+    [FILTER_CATMULL_ROM]    = &pl_filter_function_catmull_rom,
+    [FILTER_MITCHELL]       = &pl_filter_function_mitchell,
+    [FILTER_ROBIDOUX]       = &pl_filter_function_robidoux,
+    [FILTER_ROBIDOUXSHARP]  = &pl_filter_function_robidouxsharp,
+    [FILTER_BICUBIC]        = &pl_filter_function_bicubic,
+    [FILTER_SPLINE16]       = &pl_filter_function_spline16,
+    [FILTER_SPLINE36]       = &pl_filter_function_spline36,
+    [FILTER_SPLINE64]       = &pl_filter_function_spline64,
+};
+
+#define KERNEL_TEXT "Kernel function"
+#define KERNEL_LONGTEXT "Main function defining the filter kernel."
+
+#define WINDOW_TEXT "Window function"
+#define WINDOW_LONGTEXT "Window the kernel by an additional function. (Optional)"
+
+#define CLAMP_TEXT "Clamping coefficient"
+#define CLAMP_LONGTEXT "If 1.0, clamp the kernel to only allow non-negative coefficients. If 0.0, no clamping is performed. Values in between are linear."
+
+#define BLUR_TEXT "Blur/Sharpen coefficient"
+#define BLUR_LONGTEXT "If 1.0, no change is performed. Values below 1.0 sharpen/narrow the kernel, values above 1.0 blur/widen the kernel. Avoid setting too low values!"
+
+#define TAPER_TEXT "Taper width"
+#define TAPER_LONGTEXT "Taper the kernel - all inputs within the range [0, taper] will return 1.0, and the rest of the kernel is squished into (taper, radius]."
+
+#define POLAR_TEXT "Use as EWA / Polar filter"
+#define POLAR_LONGTEXT "EWA/Polar filters are much slower but higher quality. Not all functions are good candidates. It's recommended to use jinc as the kernel."
+
+#define DEBAND_TEXT "Enable debanding"
+#define DEBAND_LONGTEXT "Turns on the debanding step. This algorithm can be further tuned with the iterations and grain options."
+
 #define DEBAND_ITER_TEXT "Debanding iterations"
-#define DEBAND_ITER_LONGTEXT "The number of debanding steps to perform per sample. Each step reduces a bit more banding, but takes time to compute. Note that the strength of each step falls off very quickly, so high numbers (>4) are practically useless. Setting this to 0 performs no debanding."
+#define DEBAND_ITER_LONGTEXT "The number of debanding steps to perform per sample. Each step reduces a bit more banding, but takes time to compute. Note that the strength of each step falls off very quickly, so high numbers (>4) are practically useless. A value of 0 is a no-op."
 
 #define DEBAND_THRESH_TEXT "Gradient threshold"
 #define DEBAND_THRESH_LONGTEXT "The debanding filter's cut-off threshold. Higher numbers increase the debanding strength dramatically, but progressively diminish image details."
@@ -545,7 +723,7 @@ static int Control(vout_display_t *vd, int query, va_list ap)
 #define DEBAND_GRAIN_TEXT "Grain strength"
 #define DEBAND_GRAIN_LONGTEXT "Add some extra noise to the image. This significantly helps cover up remaining quantization artifacts. Higher numbers add more noise."
 
-#define SIGMOID_TEXT "Use sigmoidization"
+#define SIGMOID_TEXT "Use sigmoidization when upscaling"
 #define SIGMOID_LONGTEXT "If true, sigmoidizes the signal before upscaling. This helps prevent ringing artifacts. Not always in effect, even if enabled."
 
 #define SIGMOID_CENTER_TEXT "Sigmoid center"
@@ -670,8 +848,17 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
     add_module ("vk", "vulkan", NULL,
                 VK_TEXT, PROVIDER_LONGTEXT)
 
-    set_section(N_("Upscaling"), NULL)
-    // TODO: upscaler
+    set_section(N_("Scaling"), NULL)
+    add_integer("upscaler-preset", SCALE_BUILTIN,
+            UPSCALER_PRESET_TEXT, SCALER_PRESET_LONGTEXT, false)
+            change_integer_list(scale_values, scale_text)
+    add_integer("downscaler-preset", SCALE_BUILTIN,
+            DOWNSCALER_PRESET_TEXT, SCALER_PRESET_LONGTEXT, false)
+            change_integer_list(scale_values, scale_text)
+    add_integer_with_range("lut-entries", 64, 16, 256,
+            LUT_ENTRIES_TEXT, LUT_ENTRIES_LONGTEXT, false)
+    add_float_with_range("antiringing", 0.0,
+            0.0, 1.0, ANTIRING_TEXT, ANTIRING_LONGTEXT, false)
     add_bool("sigmoid", !!pl_render_default_params.sigmoid_params,
             SIGMOID_TEXT, SIGMOID_LONGTEXT, true)
     add_float_with_range("sigmoid-center", pl_sigmoid_default_params.center,
@@ -679,10 +866,8 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
     add_float_with_range("sigmoid-slope", pl_sigmoid_default_params.slope,
             1., 20., SIGMOID_SLOPE_TEXT, SIGMOID_SLOPE_LONGTEXT, true)
 
-    set_section(N_("Downscaling"), NULL)
-    // TODO: downscaler
-
     set_section(N_("Debanding"), NULL)
+    add_bool("debanding", false, DEBAND_TEXT, DEBAND_LONGTEXT, false)
     add_integer("iterations", pl_deband_default_params.iterations,
             DEBAND_ITER_TEXT, DEBAND_ITER_LONGTEXT, false)
     add_float("threshold", pl_deband_default_params.threshold,
@@ -726,7 +911,7 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
             0., 10., SCENE_THRESHOLD_TEXT, SCENE_THRESHOLD_LONGTEXT, false)
 
     set_section(N_("Dithering"), NULL)
-    add_integer("dither", pl_dither_default_params.method,
+    add_integer("dither", -1,
             DITHER_TEXT, DITHER_LONGTEXT, false)
             change_integer_list(dither_values, dither_text)
     add_integer_with_range("dither-size", pl_dither_default_params.lut_size,
@@ -737,6 +922,36 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
     // TODO: support for ICC profiles / 3DLUTs.. we will need some way of loading
     // this from the operating system / user
 
+    set_section(N_("Custom upscaler (when preset = custom)"), NULL)
+    add_integer("upscaler-kernel", FILTER_BOX,
+            KERNEL_TEXT, KERNEL_LONGTEXT, true)
+            change_integer_list(filter_values, filter_text)
+    add_integer("upscaler-window", FILTER_NONE,
+            WINDOW_TEXT, WINDOW_LONGTEXT, true)
+            change_integer_list(filter_values, filter_text)
+    add_bool("upscaler-polar", false, POLAR_TEXT, POLAR_LONGTEXT, true)
+    add_float_with_range("upscaler-clamp", 0.0,
+            0.0, 1.0, CLAMP_TEXT, CLAMP_LONGTEXT, true)
+    add_float_with_range("upscaler-blur", 1.0,
+            0.0, 100.0, BLUR_TEXT, BLUR_LONGTEXT, true)
+    add_float_with_range("upscaler-taper", 0.0,
+            0.0, 10.0, TAPER_TEXT, TAPER_LONGTEXT, true)
+
+    set_section(N_("Custom downscaler (when preset = custom)"), NULL)
+    add_integer("downscaler-kernel", FILTER_BOX,
+            KERNEL_TEXT, KERNEL_LONGTEXT, true)
+            change_integer_list(filter_values, filter_text)
+    add_integer("downscaler-window", FILTER_NONE,
+            WINDOW_TEXT, WINDOW_LONGTEXT, true)
+            change_integer_list(filter_values, filter_text)
+    add_bool("downscaler-polar", false, POLAR_TEXT, POLAR_LONGTEXT, true)
+    add_float_with_range("downscaler-clamp", 0.0,
+            0.0, 1.0, CLAMP_TEXT, CLAMP_LONGTEXT, true)
+    add_float_with_range("downscaler-blur", 1.0,
+            0.0, 100.0, BLUR_TEXT, BLUR_LONGTEXT, true)
+    add_float_with_range("downscaler-taper", 0.0,
+            0.0, 10.0, TAPER_TEXT, TAPER_LONGTEXT, true)
+
     set_section(N_("Performance tweaks / debugging"), NULL)
     add_bool("skip-aa", false, SKIP_AA_TEXT, SKIP_AA_LONGTEXT, false)
     add_float_with_range("polar-cutoff", 0.001,
@@ -746,3 +961,100 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
     add_bool("force-general", false, FORCE_GENERAL_TEXT, FORCE_GENERAL_LONGTEXT, false)
 
 vlc_module_end ()
+
+// Update the renderer settings based on the current configuration.
+//
+// XXX: This could be called every time the parameters change, but currently
+// VLC does not allow that - so we're stuck with doing it once on Open().
+// Should be changed as soon as it's possible!
+static void UpdateParams(vout_display_t *vd)
+{
+    vout_display_sys_t *sys = vd->sys;
+
+    sys->deband = pl_deband_default_params;
+    sys->deband.iterations = var_InheritInteger(vd, "iterations");
+    sys->deband.threshold = var_InheritFloat(vd, "threshold");
+    sys->deband.radius = var_InheritFloat(vd, "radius");
+    sys->deband.grain = var_InheritFloat(vd, "grain");
+    bool use_deband = sys->deband.iterations > 0 || sys->deband.grain > 0;
+    use_deband &= var_InheritBool(vd, "debanding");
+
+    sys->sigmoid = pl_sigmoid_default_params;
+    sys->sigmoid.center = var_InheritFloat(vd, "sigmoid-center");
+    sys->sigmoid.slope = var_InheritFloat(vd, "sigmoid-slope");
+    bool use_sigmoid = var_InheritBool(vd, "sigmoid");
+
+    sys->color_adjust = pl_color_adjustment_neutral;
+    sys->color_adjust.brightness = var_InheritFloat(vd, "vkbrightness");
+    sys->color_adjust.contrast = var_InheritFloat(vd, "vkcontrast");
+    sys->color_adjust.saturation = var_InheritFloat(vd, "vksaturation");
+    sys->color_adjust.hue = var_InheritFloat(vd, "vkhue");
+    sys->color_adjust.gamma = var_InheritFloat(vd, "vkgamma");
+
+    sys->color_map = pl_color_map_default_params;
+    sys->color_map.intent = var_InheritInteger(vd, "intent");
+    sys->color_map.tone_mapping_algo = var_InheritInteger(vd, "tone-mapping");
+    sys->color_map.tone_mapping_param = var_InheritFloat(vd, "tone-mapping-param");
+    sys->color_map.tone_mapping_desaturate = var_InheritFloat(vd, "tone-mapping-desat");
+    sys->color_map.gamut_warning = var_InheritBool(vd, "gamut-warning");
+    sys->color_map.peak_detect_frames = var_InheritInteger(vd, "peak-frames");
+    sys->color_map.scene_threshold = var_InheritFloat(vd, "scene-threshold");
+
+    sys->dither = pl_dither_default_params;
+    int method = var_InheritInteger(vd, "dither");
+    bool use_dither = method >= 0;
+    sys->dither.method = use_dither ? method : 0;
+    sys->dither.lut_size = var_InheritInteger(vd, "dither-size");
+    sys->dither.temporal = var_InheritBool(vd, "temporal-dither");
+
+    sys->params = pl_render_default_params;
+    sys->params.deband_params = use_deband ? &sys->deband : NULL;
+    sys->params.sigmoid_params = use_sigmoid ? &sys->sigmoid : NULL;
+    sys->params.color_adjustment = &sys->color_adjust;
+    sys->params.color_map_params = &sys->color_map;
+    sys->params.dither_params = use_dither ? &sys->dither : NULL;
+    sys->params.lut_entries = var_InheritInteger(vd, "lut-entries");
+    sys->params.antiringing_strength = var_InheritFloat(vd, "antiringing");
+    sys->params.skip_anti_aliasing = var_InheritBool(vd, "skip-aa");
+    sys->params.polar_cutoff = var_InheritFloat(vd, "polar-cutoff");
+    sys->params.disable_linear_scaling = var_InheritBool(vd, "disable-linear");
+    sys->params.disable_builtin_scalers = var_InheritBool(vd, "force-general");
+
+    int preset = var_InheritInteger(vd, "upscaler-preset");
+    sys->params.upscaler = scale_config[preset];
+    if (preset == SCALE_CUSTOM) {
+        sys->params.upscaler = &sys->upscaler;
+        sys->upscaler = (struct pl_filter_config) {
+            .kernel = filter_fun[var_InheritInteger(vd, "upscaler-kernel")],
+            .window = filter_fun[var_InheritInteger(vd, "upscaler-window")],
+            .clamp  = var_InheritFloat(vd, "upscaler-clamp"),
+            .blur   = var_InheritFloat(vd, "upscaler-blur"),
+            .taper  = var_InheritFloat(vd, "upscaler-taper"),
+            .polar  = var_InheritBool(vd, "upscaler-polar"),
+        };
+
+        if (!sys->upscaler.kernel) {
+            msg_Err(vd, "Tried specifying a custom upscaler with no kernel!");
+            sys->params.upscaler = NULL;
+        }
+    };
+
+    preset = var_InheritInteger(vd, "downscaler-preset");
+    sys->params.downscaler = scale_config[preset];
+    if (preset == SCALE_CUSTOM) {
+        sys->params.downscaler = &sys->downscaler;
+        sys->downscaler = (struct pl_filter_config) {
+            .kernel = filter_fun[var_InheritInteger(vd, "downscaler-kernel")],
+            .window = filter_fun[var_InheritInteger(vd, "downscaler-window")],
+            .clamp  = var_InheritFloat(vd, "downscaler-clamp"),
+            .blur   = var_InheritFloat(vd, "downscaler-blur"),
+            .taper  = var_InheritFloat(vd, "downscaler-taper"),
+            .polar  = var_InheritBool(vd, "downscaler-polar"),
+        };
+
+        if (!sys->downscaler.kernel) {
+            msg_Err(vd, "Tried specifying a custom downscaler with no kernel!");
+            sys->params.downscaler = NULL;
+        }
+    };
+}
