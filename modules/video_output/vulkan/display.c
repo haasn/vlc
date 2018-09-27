@@ -380,8 +380,8 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
         .num_planes = pic->i_planes,
         .width      = pic->format.i_visible_width,
         .height     = pic->format.i_visible_height,
-        .color      = vlc_placebo_ColorSpace(&pic->format),
-        .repr       = vlc_placebo_ColorRepr(&pic->format),
+        .color      = vlc_placebo_ColorSpace(&vd->fmt),
+        .repr       = vlc_placebo_ColorRepr(&vd->fmt),
         .src_rect = {
             .x0 = pic->format.i_x_offset,
             .y0 = pic->format.i_y_offset,
@@ -407,8 +407,8 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
         }
 
         // Matches only the chroma planes, never luma or alpha
-        if (vlc_fourcc_IsYUV(pic->format.i_chroma) && i != 0 && i != 3) {
-            enum pl_chroma_location loc = vlc_placebo_ChromaLoc(&pic->format);
+        if (vlc_fourcc_IsYUV(vd->fmt.i_chroma) && i != 0 && i != 3) {
+            enum pl_chroma_location loc = vlc_placebo_ChromaLoc(&vd->fmt);
             pl_chroma_location_offset(loc, &plane->shift_x, &plane->shift_y);
         }
     }
@@ -467,8 +467,8 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
                     .y1 = target.dst_rect.y0 + r->i_y + r->fmt.i_visible_height,
                 },
                 .mode = PL_OVERLAY_NORMAL,
-                .color = vlc_placebo_ColorSpace(&r->p_picture->format),
-                .repr  = vlc_placebo_ColorRepr(&r->p_picture->format),
+                .color = vlc_placebo_ColorSpace(&r->fmt),
+                .repr  = vlc_placebo_ColorRepr(&r->fmt),
             };
 
             if (!pl_upload_plane(gpu, &overlay->plane, &sys->overlay_tex[i], &data)) {
