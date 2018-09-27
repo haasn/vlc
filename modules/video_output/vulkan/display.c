@@ -55,6 +55,11 @@ struct vout_display_sys_t
     struct pl_renderer *renderer;
     picture_pool_t *pool;
 
+    // Pool of textures for the subpictures
+    struct pl_overlay *overlays;
+    const struct pl_tex **overlay_tex;
+    int num_overlays;
+
     // Dynamic during rendering
     vout_display_place_t place;
     uint64_t counter;
@@ -157,6 +162,22 @@ static int Open(vlc_object_t *obj)
         }
     }
 
+    // Hard-coded list of supported subtitle chromas (non-planar only!)
+    static const vlc_fourcc_t subfmts[] = {
+        VLC_CODEC_RGBA,
+        VLC_CODEC_BGRA,
+        VLC_CODEC_RGB8,
+        VLC_CODEC_RGB12,
+        VLC_CODEC_RGB15,
+        VLC_CODEC_RGB16,
+        VLC_CODEC_RGB24,
+        VLC_CODEC_RGB32,
+        VLC_CODEC_GREY,
+        NULL
+    };
+
+    vd->info.subpicture_chromas = subfmts;
+
     vd->pool = Pool;
     vd->prepare = PictureRender;
     vd->display = PictureDisplay;
@@ -184,6 +205,14 @@ static void Close(vlc_object_t *obj)
 
     for (int i = 0; i < 4; i++)
         pl_tex_destroy(gpu, &sys->plane_tex[i]);
+
+    for (int i = 0; i < sys->num_overlays; i++)
+        pl_tex_destroy(gpu, &sys->overlay_tex[i]);
+
+    if (sys->overlays) {
+        free(sys->overlays);
+        free(sys->overlay_tex);
+    }
 
     pl_renderer_destroy(&sys->renderer);
     pl_swapchain_destroy(&sys->swapchain);
@@ -397,9 +426,6 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
     // Garbage collect all previously used mapped buffers
     PollBuffers(vd);
 
-    // Upload the image data for each subpicture region
-    // TODO
-
     struct pl_render_target target;
     pl_render_target_from_swapchain(&target, &frame);
     // TODO: set overlays based on the subpictures
@@ -409,6 +435,53 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
         .x1 = sys->place.x + sys->place.width,
         .y1 = sys->place.y + sys->place.height,
     };
+
+    if (subpicture) {
+        int num_regions = 0;
+        for (subpicture_region_t *r = subpicture->p_region; r; r = r->p_next)
+            num_regions++;
+
+        // Grow the overlays array if needed
+        if (num_regions > sys->num_overlays) {
+            sys->overlays = realloc(sys->overlays, num_regions * sizeof(struct pl_overlay));
+            sys->overlay_tex = realloc(sys->overlay_tex, num_regions * sizeof(struct pl_tex *));
+            for (int i = sys->num_overlays; i < num_regions; i++)
+                sys->overlay_tex[i] = NULL;
+            sys->num_overlays = num_regions;
+        }
+
+        // Upload all of the regions
+        subpicture_region_t *r = subpicture->p_region;
+        for (int i = 0; i < num_regions; i++) {
+            assert(r->p_picture->i_planes == 1);
+            struct pl_plane_data data;
+            if (!vlc_placebo_PlaneData(r->p_picture, &data, NULL))
+                assert(!"Failed processing the subpicture_t into pl_plane_data!?");
+
+            struct pl_overlay *overlay = &sys->overlays[i];
+            *overlay = (struct pl_overlay) {
+                .rect = {
+                    .x0 = target.dst_rect.x0 + r->i_x,
+                    .y0 = target.dst_rect.y0 + r->i_y,
+                    .x1 = target.dst_rect.x0 + r->i_x + r->fmt.i_visible_width,
+                    .y1 = target.dst_rect.y0 + r->i_y + r->fmt.i_visible_height,
+                },
+                .mode = PL_OVERLAY_NORMAL,
+                .color = vlc_placebo_ColorSpace(&r->p_picture->format),
+                .repr  = vlc_placebo_ColorRepr(&r->p_picture->format),
+            };
+
+            if (!pl_upload_plane(gpu, &overlay->plane, &sys->overlay_tex[i], &data)) {
+                msg_Err(vd, "Failed uploading subpicture region!");
+                num_regions = i; // stop here
+                break;
+            }
+        }
+
+        // Update the target information to reference the subpictures
+        target.overlays = sys->overlays;
+        target.num_overlays = num_regions;
+    }
 
     // If we don't cover the entire output, clear it first
     struct pl_rect2d full = {0, 0, frame.fbo->params.w, frame.fbo->params.h };
