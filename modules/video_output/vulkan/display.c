@@ -163,7 +163,7 @@ error:
     pl_renderer_destroy(&sys->renderer);
     if (sys->vk != NULL)
         vlc_vk_Release(sys->vk);
-    free(sys);
+    vlc_obj_free(obj, sys);
     return VLC_EGENERIC;
 }
 
@@ -191,7 +191,7 @@ static void Close(vlc_object_t *obj)
         picture_pool_Release(sys->pool);
 
     vlc_vk_Release(sys->vk);
-    free (sys);
+    vlc_obj_free(obj, sys);
 }
 
 static void DestroyPicture(picture_t *pic)
