@@ -71,7 +71,6 @@ struct vout_display_sys_t
     struct pl_filter_config downscaler;
     struct pl_deband_params deband;
     struct pl_sigmoid_params sigmoid;
-    struct pl_color_adjustment color_adjust;
     struct pl_color_map_params color_map;
     struct pl_dither_params dither;
     struct pl_render_params params;
@@ -927,21 +926,6 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
     add_float("grain", pl_deband_default_params.grain,
             DEBAND_GRAIN_TEXT, DEBAND_GRAIN_LONGTEXT, false)
 
-    // XXX: This may not really make sense as a libplacebo-specified option.
-    // Does VLC expose some generalized/shared color mixer settings somewhere?
-    // TODO: turns out it does, need to fix
-    set_section(N_("Color adjustment"), NULL)
-    add_float_with_range("vkbrightness", pl_color_adjustment_neutral.brightness,
-            -1., 1., BRIGHTNESS_TEXT, BRIGHTNESS_LONGTEXT, false)
-    add_float_with_range("vksaturation", pl_color_adjustment_neutral.saturation,
-            0., 10., SATURATION_TEXT, SATURATION_LONGTEXT, false)
-    add_float_with_range("vkcontrast", pl_color_adjustment_neutral.contrast,
-            0., 10., CONTRAST_TEXT, CONTRAST_TEXT, false)
-    add_float_with_range("vkgamma", pl_color_adjustment_neutral.gamma,
-            0., 10., GAMMA_TEXT, GAMMA_LONGTEXT, false)
-    add_float_with_range("vkhue", pl_color_adjustment_neutral.hue,
-            -M_PI, M_PI, HUE_TEXT, HUE_LONGTEXT, false)
-
     // XXX: code duplication with opengl/vout_helper.h
     set_section(N_("Colorspace conversion"), NULL)
     add_integer("intent", pl_color_map_default_params.intent,
@@ -1034,13 +1018,6 @@ static void UpdateParams(vout_display_t *vd)
     sys->sigmoid.slope = var_InheritFloat(vd, "sigmoid-slope");
     bool use_sigmoid = var_InheritBool(vd, "sigmoid");
 
-    sys->color_adjust = pl_color_adjustment_neutral;
-    sys->color_adjust.brightness = var_InheritFloat(vd, "vkbrightness");
-    sys->color_adjust.contrast = var_InheritFloat(vd, "vkcontrast");
-    sys->color_adjust.saturation = var_InheritFloat(vd, "vksaturation");
-    sys->color_adjust.hue = var_InheritFloat(vd, "vkhue");
-    sys->color_adjust.gamma = var_InheritFloat(vd, "vkgamma");
-
     sys->color_map = pl_color_map_default_params;
     sys->color_map.intent = var_InheritInteger(vd, "intent");
     sys->color_map.tone_mapping_algo = var_InheritInteger(vd, "tone-mapping");
@@ -1060,7 +1037,6 @@ static void UpdateParams(vout_display_t *vd)
     sys->params = pl_render_default_params;
     sys->params.deband_params = use_deband ? &sys->deband : NULL;
     sys->params.sigmoid_params = use_sigmoid ? &sys->sigmoid : NULL;
-    sys->params.color_adjustment = &sys->color_adjust;
     sys->params.color_map_params = &sys->color_map;
     sys->params.dither_params = use_dither ? &sys->dither : NULL;
     sys->params.lut_entries = var_InheritInteger(vd, "lut-entries");
