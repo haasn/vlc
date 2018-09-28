@@ -334,6 +334,7 @@ static void PollBuffers(vout_display_t *vd)
 static void PictureRender(vout_display_t *vd, picture_t *pic,
                           subpicture_t *subpicture, mtime_t date)
 {
+    VLC_UNUSED(date);
     vout_display_sys_t *sys = vd->sys;
     const struct pl_gpu *gpu = sys->vk->vulkan->gpu;
     bool failed = false;
