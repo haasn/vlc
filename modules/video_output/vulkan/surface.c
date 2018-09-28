@@ -42,6 +42,8 @@
 #define MODULE_NAME N_("VkWin32")
 #define MODULE_DESC N_("Win32 extension for Vulkan")
 
+#else
+#error Trying to build vulkan/surface.c without any platform defined!
 #endif
 
 #include "../placebo_utils.h"
@@ -79,16 +81,18 @@ static int Open (vlc_object_t *obj)
         goto error;
 
     vk->instance = pl_vk_inst_create(vk->ctx, &(struct pl_vk_inst_params) {
-        .debug = vk->use_debug,
+        .debug = false, // TODO: allow influencing
         .extensions = (const char *[]) {
             VK_KHR_SURFACE_EXTENSION_NAME,
             surf_extension,
         },
         .num_extensions = 2,
     });
+    if (!vk->instance)
+        goto error;
 
     // Create the platform-specific surface object
-    const VkInstance *vkinst = &vk->instance->instance;
+    const VkInstance vkinst = vk->instance->instance;
 #ifdef VK_USE_PLATFORM_XLIB_KHR
 
     VkXlibSurfaceCreateInfoKHR xinfo = {
@@ -97,7 +101,7 @@ static int Open (vlc_object_t *obj)
          .window = (Window) vk->window->handle.xid,
     };
 
-    VkResult res = vkCreateXlibSurfaceKHR(*vkinst, &xinfo, NULL, &vk->surface);
+    VkResult res = vkCreateXlibSurfaceKHR(vkinst, &xinfo, NULL, &vk->surface);
 
 #elif VK_USE_PLATFORM_WIN32_KHR
 
@@ -110,19 +114,41 @@ static int Open (vlc_object_t *obj)
          .hwnd = (HWND) vk->window->handle.hwnd,
     };
 
-    VkResult res = vkCreateWin32SurfaceKHR(*vkinst, &winfo, NULL, &vk->surface);
+    VkResult res = vkCreateWin32SurfaceKHR(vkinst, &winfo, NULL, &vk->surface);
 
 #endif
 
     if (res != VK_SUCCESS)
         goto error;
 
+    // Create vulkan device
+    struct pl_vulkan_params vk_params = pl_vulkan_default_params;
+    vk_params.instance = vkinst;
+    vk_params.surface = vk->surface;
+    // TODO: allow influencing device selection/creation?
+    vk->vulkan = pl_vulkan_create(vk->ctx, &vk_params);
+    if (!vk->vulkan)
+        goto error;
+
+    // Create swapchain for this surface
+    struct pl_vulkan_swapchain_params swap_params = {
+        .surface = vk->surface,
+        .present_mode = VK_PRESENT_MODE_FIFO_KHR,
+        // TODO: allow influencing the other settings?
+    };
+
+    vk->swapchain = pl_vulkan_create_swapchain(vk->vulkan, &swap_params);
+    if (!vk->swapchain)
+        goto error;
+
     return VLC_SUCCESS;
 
 error:
+    pl_swapchain_destroy(&vk->swapchain);
     if (vk->surface)
-        vkDestroySurfaceKHR(*vkinst, vk->surface, NULL);
+        vkDestroySurfaceKHR(vk->instance->instance, vk->surface, NULL);
 
+    pl_vulkan_destroy(&vk->vulkan);
     pl_vk_inst_destroy(&vk->instance);
     pl_context_destroy(&vk->ctx);
 

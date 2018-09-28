@@ -31,56 +31,46 @@
 
 #include "vk_instance.h"
 
-struct vlc_vk_priv_t
-{
-    vlc_vk_t vk;
-    atomic_uint ref_count;
-};
-
 /**
  * Creates a Vulkan surface (and its underlying instance).
  *
  * @param wnd window to use as Vulkan surface
- * @param debug if true, load the standard validation layers
  * @param name module name (or NULL for auto)
  * @return a new context, or NULL on failure
  */
-vlc_vk_t *vlc_vk_Create(struct vout_window_t *wnd, bool debug, const char *name)
+vlc_vk_t *vlc_vk_Create(struct vout_window_t *wnd, const char *name)
 {
     vlc_object_t *parent = (vlc_object_t *) wnd;
-    struct vlc_vk_priv_t *vkpriv;
+    struct vlc_vk_t *vk;
 
-    vkpriv = vlc_object_create(parent, sizeof (*vkpriv));
-    if (unlikely(vkpriv == NULL))
+    vk = vlc_object_create(parent, sizeof (*vk));
+    if (unlikely(vk == NULL))
         return NULL;
 
-    vkpriv->vk.ctx = NULL;
-    vkpriv->vk.instance = NULL;
-    vkpriv->vk.surface = (VkSurfaceKHR) NULL;
+    vk->ctx = NULL;
+    vk->instance = NULL;
+    vk->surface = (VkSurfaceKHR) NULL;
 
-    vkpriv->vk.use_debug = debug;
-    vkpriv->vk.window = wnd;
-    vkpriv->vk.module = module_need(&vkpriv->vk, "vulkan", name, true);
-    if (vkpriv->vk.module == NULL)
+    vk->window = wnd;
+    vk->module = module_need(vk, "vulkan", name, true);
+    if (vk->module == NULL)
     {
-        vlc_object_release(&vkpriv->vk);
+        vlc_object_release(vk);
         return NULL;
     }
-    atomic_init(&vkpriv->ref_count, 1);
+    atomic_init(&vk->ref_count, 1);
 
-    return &vkpriv->vk;
+    return vk;
 }
 
 void vlc_vk_Hold(vlc_vk_t *vk)
 {
-    struct vlc_vk_priv_t *vkpriv = (struct vlc_vk_priv_t *) vk;
-    atomic_fetch_add(&vkpriv->ref_count, 1);
+    atomic_fetch_add(&vk->ref_count, 1);
 }
 
 void vlc_vk_Release(vlc_vk_t *vk)
 {
-    struct vlc_vk_priv_t *vkpriv = (struct vlc_vk_priv_t *) vk;
-    if (atomic_fetch_sub(&vkpriv->ref_count, 1) != 1)
+    if (atomic_fetch_sub(&vk->ref_count, 1) != 1)
         return;
     module_unneed(vk, vk->module);
     vlc_object_release(vk);

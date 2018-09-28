@@ -25,6 +25,8 @@
 # include <config.h>
 #endif
 
+#include <stdatomic.h>
+
 #include <vulkan/vulkan.h>
 #include <libplacebo/vulkan.h>
 
@@ -34,22 +36,22 @@ struct vout_window_cfg_t;
 // Shared struct for vulkan instance / surface / device state
 typedef struct vlc_vk_t
 {
+    // fields internal to vk_instance.c, should not be touched
     struct vlc_common_members obj;
-
-    struct vout_window_t *window;
     module_t *module;
+    atomic_uint ref_count;
     void *sys;
 
+    // these should be initialized by the surface module (i.e. surface.c)
     struct pl_context *ctx;
     const struct pl_vk_inst *instance;
     const struct pl_vulkan *vulkan;
+    const struct pl_swapchain *swapchain;
     VkSurfaceKHR surface;
-
-    // whether to enable standard validation layers
-    bool use_debug;
+    struct vout_window_t *window;
 } vlc_vk_t;
 
-vlc_vk_t *vlc_vk_Create(struct vout_window_t *, bool, const char *) VLC_USED;
+vlc_vk_t *vlc_vk_Create(struct vout_window_t *, const char *) VLC_USED;
 void vlc_vk_Release(vlc_vk_t *);
 void vlc_vk_Hold(vlc_vk_t *);
 

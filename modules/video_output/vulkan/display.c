@@ -49,8 +49,6 @@
 struct vout_display_sys_t
 {
     vlc_vk_t *vk;
-    const struct pl_vulkan *pl_vk;
-    const struct pl_swapchain *swapchain;
     const struct pl_tex *plane_tex[4];
     struct pl_renderer *renderer;
     picture_pool_t *pool;
@@ -98,10 +96,9 @@ static void UpdateParams(vout_display_t *);
 static int Open(vlc_object_t *obj)
 {
     vout_display_t *vd = (vout_display_t *) obj;
-    vout_display_sys_t *sys = vd->sys = malloc(sizeof (*sys));
+    vout_display_sys_t *sys = vd->sys = vlc_obj_calloc(obj, 1, sizeof (*sys));
     if (unlikely(sys == NULL))
         return VLC_ENOMEM;
-    *sys = (struct vout_display_sys_t) {0};
 
     vout_window_t *window = vd->cfg->window;
     if (window == NULL)
@@ -110,36 +107,12 @@ static int Open(vlc_object_t *obj)
         goto error;
     }
 
-    sys->vk = vlc_vk_Create(window, false, NULL); // TODO parametrize
+    sys->vk = vlc_vk_Create(window, NULL);
     if (sys->vk == NULL)
         goto error;
 
-
-    struct pl_context *ctx = sys->vk->ctx;
-    struct pl_vulkan_params vk_params = pl_vulkan_default_params;
-    vk_params.instance = sys->vk->instance->instance;
-    vk_params.surface = sys->vk->surface;
-    // TODO: allow influencing device selection
-
-    sys->pl_vk = pl_vulkan_create(ctx, &vk_params);
-    if (!sys->pl_vk)
-        goto error;
-
-    // TODO: Move this to context creation
-    sys->vk->vulkan = sys->pl_vk;
-
-    struct pl_vulkan_swapchain_params swap_params = {
-        .surface = sys->vk->surface,
-        .present_mode = VK_PRESENT_MODE_FIFO_KHR,
-        // TODO: allow influencing the other settings?
-    };
-
-    sys->swapchain = pl_vulkan_create_swapchain(sys->pl_vk, &swap_params);
-    if (!sys->swapchain)
-        goto error;
-
-    const struct pl_gpu *gpu = sys->pl_vk->gpu;
-    sys->renderer = pl_renderer_create(ctx, gpu);
+    const struct pl_gpu *gpu = sys->vk->vulkan->gpu;
+    sys->renderer = pl_renderer_create(sys->vk->ctx, gpu);
     if (!sys->renderer)
         goto error;
 
@@ -173,7 +146,7 @@ static int Open(vlc_object_t *obj)
         VLC_CODEC_RGB24,
         VLC_CODEC_RGB32,
         VLC_CODEC_GREY,
-        NULL
+        0
     };
 
     vd->info.subpicture_chromas = subfmts;
@@ -188,9 +161,6 @@ static int Open(vlc_object_t *obj)
 
 error:
     pl_renderer_destroy(&sys->renderer);
-    pl_swapchain_destroy(&sys->swapchain);
-    pl_vulkan_destroy(&sys->pl_vk);
-
     if (sys->vk != NULL)
         vlc_vk_Release(sys->vk);
     free(sys);
@@ -201,7 +171,7 @@ static void Close(vlc_object_t *obj)
 {
     vout_display_t *vd = (vout_display_t *)obj;
     vout_display_sys_t *sys = vd->sys;
-    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+    const struct pl_gpu *gpu = sys->vk->vulkan->gpu;
 
     for (int i = 0; i < 4; i++)
         pl_tex_destroy(gpu, &sys->plane_tex[i]);
@@ -215,13 +185,11 @@ static void Close(vlc_object_t *obj)
     }
 
     pl_renderer_destroy(&sys->renderer);
-    pl_swapchain_destroy(&sys->swapchain);
 
     PollBuffers(vd);
     if (sys->pool)
         picture_pool_Release(sys->pool);
 
-    pl_vulkan_destroy(&sys->pl_vk);
     vlc_vk_Release(sys->vk);
     free (sys);
 }
@@ -238,7 +206,7 @@ static void DestroyPicture(picture_t *pic)
 static picture_t *CreatePicture(vout_display_t *vd)
 {
     vout_display_sys_t *sys = vd->sys;
-    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+    const struct pl_gpu *gpu = sys->vk->vulkan->gpu;
 
     struct picture_sys *picsys = calloc(1, sizeof(*picsys));
     if (unlikely(picsys == NULL))
@@ -343,7 +311,7 @@ error:
 static void PollBuffers(vout_display_t *vd)
 {
     vout_display_sys_t *sys = vd->sys;
-    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+    const struct pl_gpu *gpu = sys->vk->vulkan->gpu;
     unsigned long long list = sys->list;
 
     // Release all pictures that are not used by the GPU anymore
@@ -368,11 +336,11 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
                           subpicture_t *subpicture, mtime_t date)
 {
     vout_display_sys_t *sys = vd->sys;
-    const struct pl_gpu *gpu = sys->pl_vk->gpu;
+    const struct pl_gpu *gpu = sys->vk->vulkan->gpu;
     bool failed = false;
 
     struct pl_swapchain_frame frame;
-    if (!pl_swapchain_start_frame(sys->swapchain, &frame))
+    if (!pl_swapchain_start_frame(sys->vk->swapchain, &frame))
         return; // Probably benign error, ignore it
 
     struct pl_image img = {
@@ -428,7 +396,6 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
 
     struct pl_render_target target;
     pl_render_target_from_swapchain(&target, &frame);
-    // TODO: set overlays based on the subpictures
     target.dst_rect = (struct pl_rect2d) {
         .x0 = sys->place.x,
         .y0 = sys->place.y,
@@ -445,6 +412,13 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
         if (num_regions > sys->num_overlays) {
             sys->overlays = realloc(sys->overlays, num_regions * sizeof(struct pl_overlay));
             sys->overlay_tex = realloc(sys->overlay_tex, num_regions * sizeof(struct pl_tex *));
+            if (!sys->overlays || !sys->overlay_tex) {
+                // Unlikely OOM, just do whatever
+                sys->num_overlays = 0;
+                failed = true;
+                goto done;
+            }
+            // Clear the newly added texture pointers for pl_upload_plane
             for (int i = sys->num_overlays; i < num_regions; i++)
                 sys->overlay_tex[i] = NULL;
             sys->num_overlays = num_regions;
@@ -454,8 +428,8 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
         subpicture_region_t *r = subpicture->p_region;
         for (int i = 0; i < num_regions; i++) {
             assert(r->p_picture->i_planes == 1);
-            struct pl_plane_data data;
-            if (!vlc_placebo_PlaneData(r->p_picture, &data, NULL))
+            struct pl_plane_data subdata;
+            if (!vlc_placebo_PlaneData(r->p_picture, &subdata, NULL))
                 assert(!"Failed processing the subpicture_t into pl_plane_data!?");
 
             struct pl_overlay *overlay = &sys->overlays[i];
@@ -471,7 +445,7 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
                 .repr  = vlc_placebo_ColorRepr(&r->fmt),
             };
 
-            if (!pl_upload_plane(gpu, &overlay->plane, &sys->overlay_tex[i], &data)) {
+            if (!pl_upload_plane(gpu, &overlay->plane, &sys->overlay_tex[i], &subdata)) {
                 msg_Err(vd, "Failed uploading subpicture region!");
                 num_regions = i; // stop here
                 break;
@@ -502,7 +476,7 @@ done:
     if (failed)
         pl_tex_clear(gpu, frame.fbo, (float[4]){ 1.0, 0.0, 0.0, 1.0 });
 
-    if (!pl_swapchain_submit_frame(sys->swapchain)) {
+    if (!pl_swapchain_submit_frame(sys->vk->swapchain)) {
         msg_Err(vd, "Failed rendering frame!");
         return;
     }
@@ -515,7 +489,7 @@ static void PictureDisplay(vout_display_t *vd, picture_t *pic, subpicture_t *sub
         subpicture_Delete(subpicture);
 
     vout_display_sys_t *sys = vd->sys;
-    pl_swapchain_swap_buffers(sys->swapchain);
+    pl_swapchain_swap_buffers(sys->vk->swapchain);
 }
 
 static int Control(vout_display_t *vd, int query, va_list ap)
