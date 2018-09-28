@@ -34,13 +34,11 @@
 #ifdef VK_USE_PLATFORM_XLIB_KHR
 
 #include <vlc_xlib.h>
-#define MODULE_NAME N_("VkXlib")
-#define MODULE_DESC N_("Xlib extension for Vulkan")
+#define MODULE_NAME N_("Vulkan context (Xlib)")
 
 #elif VK_USE_PLATFORM_WIN32_KHR
 
-#define MODULE_NAME N_("VkWin32")
-#define MODULE_DESC N_("Win32 extension for Vulkan")
+#define MODULE_NAME N_("Vulkan context (Win32)")
 
 #else
 #error Trying to build vulkan/surface.c without any platform defined!
@@ -218,7 +216,7 @@ static const char * const present_text[] = {
 
 vlc_module_begin ()
     set_shortname (MODULE_NAME)
-    set_description (MODULE_DESC)
+    set_description (MODULE_NAME)
     set_category (CAT_VIDEO)
     set_subcategory (SUBCAT_VIDEO_VOUT)
     set_capability ("vulkan", 10)
