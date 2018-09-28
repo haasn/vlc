@@ -339,7 +339,7 @@ int vlc_placebo_PlaneData(const picture_t *pic, struct pl_plane_data data[4],
             assert(buf->data);
             assert(pic->p[i].p_pixels <= buf->data + buf->params.size);
             data[i].buf = buf;
-            data[i].buf_offset = pic->p[i].p_pixels - (ptrdiff_t) buf->data;
+            data[i].buf_offset = (uintptr_t) pic->p[i].p_pixels - (ptrdiff_t) buf->data;
         } else {
             data[i].pixels = pic->p[i].p_pixels;
         }

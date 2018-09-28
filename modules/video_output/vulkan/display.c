@@ -74,6 +74,8 @@ struct vout_display_sys_t
     struct pl_color_map_params color_map;
     struct pl_dither_params dither;
     struct pl_render_params params;
+    struct pl_color_space target;
+    int dither_depth;
 };
 
 struct picture_sys
@@ -403,6 +405,23 @@ static void PictureRender(vout_display_t *vd, picture_t *pic,
         .y1 = sys->place.y + sys->place.height,
     };
 
+    // Override the target colorimetry only if the user requests it
+    if (sys->target.primaries)
+        target.color.primaries = sys->target.primaries;
+    if (sys->target.transfer) {
+        target.color.transfer = sys->target.transfer;
+        target.color.light = PL_COLOR_LIGHT_UNKNOWN; // re-infer
+    }
+    if (sys->target.sig_avg > 0.0)
+        target.color.sig_avg = sys->target.sig_avg;
+    if (sys->dither_depth > 0) {
+        // override the sample depth without affecting the color encoding
+        struct pl_bit_encoding *bits = &target.repr.bits;
+        float scale = bits->color_depth / bits->sample_depth;
+        bits->sample_depth = sys->dither_depth;
+        bits->color_depth = scale * sys->dither_depth;
+    }
+
     if (subpicture) {
         int num_regions = 0;
         for (subpicture_region_t *r = subpicture->p_region; r; r = r->p_next)
@@ -527,367 +546,6 @@ static int Control(vout_display_t *vd, int query, va_list ap)
 #define PROVIDER_LONGTEXT N_( \
     "Extension which provides the Vulkan surface to use.")
 
-enum {
-    SCALE_BUILTIN = 0,
-    SCALE_SPLINE16,
-    SCALE_SPLINE36,
-    SCALE_SPLINE64,
-    SCALE_MITCHELL,
-    SCALE_BICUBIC,
-    SCALE_EWA_LANCZOS,
-    SCALE_NEAREST,
-    SCALE_BILINEAR,
-    SCALE_GAUSSIAN,
-    SCALE_LANCZOS,
-    SCALE_GINSENG,
-    SCALE_EWA_GINSENG,
-    SCALE_EWA_HANN,
-    SCALE_HAASNSOFT,
-    SCALE_CATMULL_ROM,
-    SCALE_ROBIDOUX,
-    SCALE_ROBIDOUXSHARP,
-    SCALE_EWA_ROBIDOUX,
-    SCALE_EWA_ROBIDOUXSHARP,
-    SCALE_SINC,
-    SCALE_EWA_JINC,
-    SCALE_CUSTOM,
-};
-
-static const int scale_values[] = {
-    SCALE_BUILTIN,
-    SCALE_SPLINE16,
-    SCALE_SPLINE36,
-    SCALE_SPLINE64,
-    SCALE_MITCHELL,
-    SCALE_BICUBIC,
-    SCALE_EWA_LANCZOS,
-    SCALE_NEAREST,
-    SCALE_BILINEAR,
-    SCALE_GAUSSIAN,
-    SCALE_LANCZOS,
-    SCALE_GINSENG,
-    SCALE_EWA_GINSENG,
-    SCALE_EWA_HANN,
-    SCALE_HAASNSOFT,
-    SCALE_CATMULL_ROM,
-    SCALE_ROBIDOUX,
-    SCALE_ROBIDOUXSHARP,
-    SCALE_EWA_ROBIDOUX,
-    SCALE_EWA_ROBIDOUXSHARP,
-    SCALE_SINC,
-    SCALE_EWA_JINC,
-    SCALE_CUSTOM,
-};
-
-static const char * const scale_text[] = {
-    "Built-in / fixed function (fast)",
-    "Spline 2 taps",
-    "Spline 3 taps (recommended upscaler)",
-    "Spline 4 taps",
-    "Mitchell-Netravali (recommended downscaler)",
-    "Bicubic",
-    "Jinc / EWA Lanczos 3 taps (high quality, slow)",
-    "Nearest neighbour",
-    "Bilinear",
-    "Gaussian",
-    "Lanczos 3 taps",
-    "Ginseng 3 taps",
-    "EWA Ginseng",
-    "EWA Hann",
-    "HaasnSoft (blurred EWA Hann)",
-    "Catmull-Rom",
-    "Robidoux",
-    "RobidouxSharp",
-    "EWA Robidoux",
-    "EWA RobidouxSharp",
-    "Unwindowed sinc (clipped)",
-    "Unwindowed EWA Jinc (clipped)",
-    "Custom (see below)",
-};
-
-static const struct pl_filter_config *scale_config[] = {
-    [SCALE_BUILTIN]             = NULL,
-    [SCALE_SPLINE16]            = &pl_filter_spline16,
-    [SCALE_SPLINE36]            = &pl_filter_spline36,
-    [SCALE_SPLINE64]            = &pl_filter_spline64,
-    [SCALE_NEAREST]             = &pl_filter_box,
-    [SCALE_BILINEAR]            = &pl_filter_triangle,
-    [SCALE_GAUSSIAN]            = &pl_filter_gaussian,
-    [SCALE_SINC]                = &pl_filter_sinc,
-    [SCALE_LANCZOS]             = &pl_filter_lanczos,
-    [SCALE_GINSENG]             = &pl_filter_ginseng,
-    [SCALE_EWA_JINC]            = &pl_filter_ewa_jinc,
-    [SCALE_EWA_LANCZOS]         = &pl_filter_ewa_lanczos,
-    [SCALE_EWA_GINSENG]         = &pl_filter_ewa_ginseng,
-    [SCALE_EWA_HANN]            = &pl_filter_ewa_hann,
-    [SCALE_HAASNSOFT]           = &pl_filter_haasnsoft,
-    [SCALE_BICUBIC]             = &pl_filter_bicubic,
-    [SCALE_CATMULL_ROM]         = &pl_filter_catmull_rom,
-    [SCALE_MITCHELL]            = &pl_filter_mitchell,
-    [SCALE_ROBIDOUX]            = &pl_filter_robidoux,
-    [SCALE_ROBIDOUXSHARP]       = &pl_filter_robidouxsharp,
-    [SCALE_EWA_ROBIDOUX]        = &pl_filter_robidoux,
-    [SCALE_EWA_ROBIDOUXSHARP]   = &pl_filter_robidouxsharp,
-    [SCALE_CUSTOM]              = NULL,
-};
-
-#define UPSCALER_PRESET_TEXT "Upscaler preset"
-#define DOWNSCALER_PRESET_TEXT "Downscaler preset"
-#define SCALER_PRESET_LONGTEXT "Choose from one of the built-in scaler presets. If set to custom, you can choose your own combination of kernel/window functions."
-
-#define LUT_ENTRIES_TEXT "Scaler LUT size"
-#define LUT_ENTRIES_LONGTEXT "Size of the LUT texture used for up/downscalers that require one. Reducing this may boost performance at the cost of quality."
-
-#define ANTIRING_TEXT "Anti-ringing strength"
-#define ANTIRING_LONGTEXT "Enables anti-ringing for non-polar filters. A value of 1.0 completely removes ringing, a value of 0.0 is a no-op."
-
-enum {
-    FILTER_NONE = 0,
-    FILTER_BOX,
-    FILTER_TRIANGLE,
-    FILTER_HANN,
-    FILTER_HAMMING,
-    FILTER_WELCH,
-    FILTER_KAISER,
-    FILTER_BLACKMAN,
-    FILTER_GAUSSIAN,
-    FILTER_SINC,
-    FILTER_JINC,
-    FILTER_SPHINX,
-    FILTER_BCSPLINE,
-    FILTER_CATMULL_ROM,
-    FILTER_MITCHELL,
-    FILTER_ROBIDOUX,
-    FILTER_ROBIDOUXSHARP,
-    FILTER_BICUBIC,
-    FILTER_SPLINE16,
-    FILTER_SPLINE36,
-    FILTER_SPLINE64,
-};
-
-static const int filter_values[] = {
-    FILTER_NONE,
-    FILTER_BOX,
-    FILTER_TRIANGLE,
-    FILTER_HANN,
-    FILTER_HAMMING,
-    FILTER_WELCH,
-    FILTER_KAISER,
-    FILTER_BLACKMAN,
-    FILTER_GAUSSIAN,
-    FILTER_SINC,
-    FILTER_JINC,
-    FILTER_SPHINX,
-    FILTER_BCSPLINE,
-    FILTER_CATMULL_ROM,
-    FILTER_MITCHELL,
-    FILTER_ROBIDOUX,
-    FILTER_ROBIDOUXSHARP,
-    FILTER_BICUBIC,
-    FILTER_SPLINE16,
-    FILTER_SPLINE36,
-    FILTER_SPLINE64,
-};
-
-static const char * const filter_text[] = {
-    "None",
-    "Box / Nearest",
-    "Triangle / Linear",
-    "Hann",
-    "Hamming",
-    "Welch",
-    "Kaiser",
-    "Blackman",
-    "Gaussian",
-    "Sinc",
-    "Jinc",
-    "Sphinx",
-    "BC spline",
-    "Catmull-Rom",
-    "Mitchell-Netravali",
-    "Robidoux",
-    "RobidouxSharp",
-    "Bicubic",
-    "Spline16",
-    "Spline36",
-    "Spline64",
-};
-
-static const struct pl_filter_function *filter_fun[] = {
-    [FILTER_NONE]           = NULL,
-    [FILTER_BOX]            = &pl_filter_function_box,
-    [FILTER_TRIANGLE]       = &pl_filter_function_triangle,
-    [FILTER_HANN]           = &pl_filter_function_hann,
-    [FILTER_HAMMING]        = &pl_filter_function_hamming,
-    [FILTER_WELCH]          = &pl_filter_function_welch,
-    [FILTER_KAISER]         = &pl_filter_function_kaiser,
-    [FILTER_BLACKMAN]       = &pl_filter_function_blackman,
-    [FILTER_GAUSSIAN]       = &pl_filter_function_gaussian,
-    [FILTER_SINC]           = &pl_filter_function_sinc,
-    [FILTER_JINC]           = &pl_filter_function_jinc,
-    [FILTER_SPHINX]         = &pl_filter_function_sphinx,
-    [FILTER_BCSPLINE]       = &pl_filter_function_bcspline,
-    [FILTER_CATMULL_ROM]    = &pl_filter_function_catmull_rom,
-    [FILTER_MITCHELL]       = &pl_filter_function_mitchell,
-    [FILTER_ROBIDOUX]       = &pl_filter_function_robidoux,
-    [FILTER_ROBIDOUXSHARP]  = &pl_filter_function_robidouxsharp,
-    [FILTER_BICUBIC]        = &pl_filter_function_bicubic,
-    [FILTER_SPLINE16]       = &pl_filter_function_spline16,
-    [FILTER_SPLINE36]       = &pl_filter_function_spline36,
-    [FILTER_SPLINE64]       = &pl_filter_function_spline64,
-};
-
-#define KERNEL_TEXT "Kernel function"
-#define KERNEL_LONGTEXT "Main function defining the filter kernel."
-
-#define WINDOW_TEXT "Window function"
-#define WINDOW_LONGTEXT "Window the kernel by an additional function. (Optional)"
-
-#define CLAMP_TEXT "Clamping coefficient"
-#define CLAMP_LONGTEXT "If 1.0, clamp the kernel to only allow non-negative coefficients. If 0.0, no clamping is performed. Values in between are linear."
-
-#define BLUR_TEXT "Blur/Sharpen coefficient"
-#define BLUR_LONGTEXT "If 1.0, no change is performed. Values below 1.0 sharpen/narrow the kernel, values above 1.0 blur/widen the kernel. Avoid setting too low values!"
-
-#define TAPER_TEXT "Taper width"
-#define TAPER_LONGTEXT "Taper the kernel - all inputs within the range [0, taper] will return 1.0, and the rest of the kernel is squished into (taper, radius]."
-
-#define POLAR_TEXT "Use as EWA / Polar filter"
-#define POLAR_LONGTEXT "EWA/Polar filters are much slower but higher quality. Not all functions are good candidates. It's recommended to use jinc as the kernel."
-
-#define DEBAND_TEXT "Enable debanding"
-#define DEBAND_LONGTEXT "Turns on the debanding step. This algorithm can be further tuned with the iterations and grain options."
-
-#define DEBAND_ITER_TEXT "Debanding iterations"
-#define DEBAND_ITER_LONGTEXT "The number of debanding steps to perform per sample. Each step reduces a bit more banding, but takes time to compute. Note that the strength of each step falls off very quickly, so high numbers (>4) are practically useless. A value of 0 is a no-op."
-
-#define DEBAND_THRESH_TEXT "Gradient threshold"
-#define DEBAND_THRESH_LONGTEXT "The debanding filter's cut-off threshold. Higher numbers increase the debanding strength dramatically, but progressively diminish image details."
-
-#define DEBAND_RADIUS_TEXT "Search radius"
-#define DEBAND_RADIUS_LONGTEXT "The debanding filter's initial radius. The radius increases linearly for each iteration. A higher radius will find more gradients, but a lower radius will smooth more aggressively."
-
-#define DEBAND_GRAIN_TEXT "Grain strength"
-#define DEBAND_GRAIN_LONGTEXT "Add some extra noise to the image. This significantly helps cover up remaining quantization artifacts. Higher numbers add more noise."
-
-#define SIGMOID_TEXT "Use sigmoidization when upscaling"
-#define SIGMOID_LONGTEXT "If true, sigmoidizes the signal before upscaling. This helps prevent ringing artifacts. Not always in effect, even if enabled."
-
-#define SIGMOID_CENTER_TEXT "Sigmoid center"
-#define SIGMOID_CENTER_LONGTEXT "The center (bias) of the sigmoid curve."
-
-#define SIGMOID_SLOPE_TEXT "Sigmoid slope"
-#define SIGMOID_SLOPE_LONGTEXT "The slope (steepness) of the sigmoid curve."
-
-#define BRIGHTNESS_TEXT "Brightness boost"
-#define BRIGHTNESS_LONGTEXT "Raises the black level of the video signal."
-
-#define CONTRAST_TEXT "Contrast scale"
-#define CONTRAST_LONGTEXT "Scales the output intensity of the video signal."
-
-#define SATURATION_TEXT "Saturation gain"
-#define SATURATION_LONGTEXT "Scales the saturation (chromaticity) of the video signal."
-
-#define GAMMA_TEXT "Gamma factor"
-#define GAMMA_LONGTEXT "Makes the video signal's gamma curve steeper or shallower."
-
-#define HUE_TEXT "Hue shift"
-#define HUE_LONGTEXT "Rotates the hue vector of the video signal, specified in radians. Not effective for all sources."
-
-// XXX: code duplication with opengl/vout_helper.h
-#define INTENT_TEXT "Rendering intent for color conversion"
-#define INTENT_LONGTEXT "The mapping type used to convert between color spaces."
-
-static const int intent_values[] = {
-    PL_INTENT_PERCEPTUAL,
-    PL_INTENT_RELATIVE_COLORIMETRIC,
-    PL_INTENT_SATURATION,
-    PL_INTENT_ABSOLUTE_COLORIMETRIC,
-};
-
-static const char * const intent_text[] = {
-    "Perceptual",
-    "Relative colorimetric",
-    "Absolute colorimetric",
-    "Saturation",
-};
-
-#define TONEMAPPING_TEXT N_("Tone-mapping algorithm")
-#define TONEMAPPING_LONGTEXT N_("Algorithm to use when converting from wide gamut to standard gamut, or from HDR to SDR.")
-
-static const int tone_values[] = {
-    PL_TONE_MAPPING_HABLE,
-    PL_TONE_MAPPING_MOBIUS,
-    PL_TONE_MAPPING_REINHARD,
-    PL_TONE_MAPPING_GAMMA,
-    PL_TONE_MAPPING_LINEAR,
-    PL_TONE_MAPPING_CLIP,
-};
-
-static const char * const tone_text[] = {
-    "Hable (filmic mapping, recommended)",
-    "Mobius (linear + knee)",
-    "Reinhard (simple non-linear)",
-    "Gamma-Power law",
-    "Linear stretch (peak to peak)",
-    "Hard clip out-of-gamut",
-};
-
-#define TONEMAP_PARAM_TEXT "Tone-mapping parameter"
-#define TONEMAP_PARAM_LONGTEXT "This parameter can be used to tune the tone-mapping curve. Specifics depend on the curve used. If left as 0, the curve's preferred default is used."
-
-#define TONEMAP_DESAT_TEXT "Tone-mapping desaturation coefficient"
-#define TONEMAP_DESAT_LONGTEXT "How strongly to desaturate bright spectral colors towards white. 0.0 disables this behavior."
-
-#define GAMUT_WARN_TEXT "Highlight clipped pixels"
-#define GAMUT_WARN_LONGTEXT "Debugging tool to indicate which pixels were clipped as part of the tone mapping process."
-
-#define PEAK_FRAMES_TEXT "HDR peak detection buffer size"
-#define PEAK_FRAMES_LONGTEXT "How many input frames to consider when determining the brightness of HDR signals. Higher values result in a slower/smoother response to brightness level changes. Setting this to 0 disables peak detection entirely."
-
-#define SCENE_THRESHOLD_TEXT "HDR peak scene change threshold"
-#define SCENE_THRESHOLD_LONGTEXT "When using HDR peak detection, this sets a threshold for sudden brightness changes that should be considered as scene changes. This will result in the detected peak being immediately updated to the new value, rather than gradually being adjusted. Setting this to 0 disables this feature."
-
-#define DITHER_TEXT N_("Dithering algorithm")
-#define DITHER_LONGTEXT N_("The algorithm to use when dithering to a lower bit depth.")
-
-static const int dither_values[] = {
-    -1, // no dithering
-    PL_DITHER_BLUE_NOISE,
-    PL_DITHER_ORDERED_FIXED,
-    PL_DITHER_ORDERED_LUT,
-    PL_DITHER_WHITE_NOISE,
-};
-
-static const char * const dither_text[] = {
-    "Disabled",
-    "Blue noise (high quality)",
-    "Bayer matrix (ordered dither), 16x16 fixed size (fast)",
-    "Bayer matrix (ordered dither), any size",
-    "White noise (fast but low quality)",
-};
-
-#define DITHER_SIZE_TEXT "Dither LUT size (log 2)"
-#define DITHER_SIZE_LONGTEXT "Controls the size of the dither matrix, as a power of two (e.g. the default of 6 corresponds to a 64x64 matrix). Does not affect all algorithms."
-
-#define TEMPORAL_DITHER_TEXT "Temporal dithering"
-#define TEMPORAL_DITHER_LONGTEXT "Enables perturbing the dither matrix across frames. This reduces the persistence of dithering artifacts, but can cause flickering on some (cheap) LCD screens."
-
-#define POLAR_CUTOFF_TEXT "Cut-off value for polar samplers"
-#define POLAR_CUTOFF_LONGTEXT "As a micro-optimization, all samples with a weight below this value will be ignored. This reduces the need to perform unnecessary work that doesn't noticeably change the resulting image. Setting it to a value of 0.0 disables this optimization."
-
-#define SKIP_AA_TEXT "Disable anti-aliasing when downscaling"
-#define SKIP_AA_LONGTEXT "This will result in moiré artifacts and nasty, jagged pixels when downscaling, except for some very limited special cases (e.g. bilinear downsampling to exactly 0.5x). Significantly speeds up downscaling with high downscaling ratios."
-
-#define OVERLAY_DIRECT_TEXT "Force GPU built-in sampling for overlay textures"
-#define OVERLAY_DIRECT_LONGTEXT "Normally, the configured up/downscalers will be used when overlay textures (such as subtitles) need to be scaled up or down. Enabling this option overrides this behavior and forces overlay textures to go through the GPU's built-in sampling instead (typically bilinear)."
-
-#define DISABLE_LINEAR_TEXT "Don't linearize before scaling"
-#define DISABLE_LINEAR_LONGTEXT "Normally, the image is converted to linear light before scaling (under certain conditions). Enabling this option disables this behavior."
-
-#define FORCE_GENERAL_TEXT "Force the use of general-purpose scalers"
-#define FORCE_GENERAL_LONGTEXT "Normally, certain special scalers will be replaced by faster versions instead of going through the general scaler architecture. Enabling this option disables these optimizations."
-
 vlc_module_begin () set_shortname (N_("Vulkan"))
     set_description (N_("Vulkan video output"))
     set_category (CAT_VIDEO)
@@ -927,11 +585,19 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
     add_float("grain", pl_deband_default_params.grain,
             DEBAND_GRAIN_TEXT, DEBAND_GRAIN_LONGTEXT, false)
 
-    // XXX: code duplication with opengl/vout_helper.h
     set_section(N_("Colorspace conversion"), NULL)
     add_integer("intent", pl_color_map_default_params.intent,
             INTENT_TEXT, INTENT_LONGTEXT, false)
             change_integer_list(intent_values, intent_text)
+    add_integer("target-prim", PL_COLOR_PRIM_UNKNOWN, PRIM_TEXT, PRIM_LONGTEXT, false) \
+            change_integer_list(prim_values, prim_text) \
+    add_integer("target-trc", PL_COLOR_TRC_UNKNOWN, TRC_TEXT, TRC_LONGTEXT, false) \
+            change_integer_list(trc_values, trc_text) \
+
+    // TODO: support for ICC profiles / 3DLUTs.. we will need some way of loading
+    // this from the operating system / user
+
+    set_section(N_("Tone mapping"), NULL)
     add_integer("tone-mapping", pl_color_map_default_params.tone_mapping_algo,
             TONEMAPPING_TEXT, TONEMAPPING_LONGTEXT, false)
             change_integer_list(tone_values, tone_text)
@@ -942,6 +608,8 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
     add_bool("gamut-warning", false, GAMUT_WARN_TEXT, GAMUT_WARN_LONGTEXT, true)
     add_integer_with_range("peak-frames", pl_color_map_default_params.peak_detect_frames,
             0, 255, PEAK_FRAMES_TEXT, PEAK_FRAMES_LONGTEXT, false)
+    add_float_with_range("target-avg", 0.25,
+            0.0, 1.0, TARGET_AVG_TEXT, TARGET_AVG_LONGTEXT, false)
     add_float_with_range("scene-threshold", pl_color_map_default_params.scene_threshold,
             0., 10., SCENE_THRESHOLD_TEXT, SCENE_THRESHOLD_LONGTEXT, false)
 
@@ -953,9 +621,8 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
             1, 8, DITHER_SIZE_TEXT, DITHER_SIZE_LONGTEXT, false)
     add_bool("temporal-dither", pl_dither_default_params.temporal,
             TEMPORAL_DITHER_TEXT, TEMPORAL_DITHER_LONGTEXT, false)
-
-    // TODO: support for ICC profiles / 3DLUTs.. we will need some way of loading
-    // this from the operating system / user
+    add_integer_with_range("dither-depth", 0,
+            0, 16, DITHER_DEPTH_TEXT, DITHER_DEPTH_LONGTEXT, false)
 
     set_section(N_("Custom upscaler (when preset = custom)"), NULL)
     add_integer("upscaler-kernel", FILTER_BOX,
@@ -1084,5 +751,12 @@ static void UpdateParams(vout_display_t *vd)
             msg_Err(vd, "Tried specifying a custom downscaler with no kernel!");
             sys->params.downscaler = NULL;
         }
+    };
+
+    sys->dither_depth = var_InheritInteger(vd, "dither-depth");
+    sys->target = (struct pl_color_space) {
+        .primaries = var_InheritInteger(vd, "target-prim"),
+        .transfer = var_InheritInteger(vd, "target-trc"),
+        .sig_avg = var_InheritFloat(vd, "target-avg"),
     };
 }
