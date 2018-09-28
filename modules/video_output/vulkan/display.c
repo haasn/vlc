@@ -879,6 +879,9 @@ static const char * const dither_text[] = {
 #define SKIP_AA_TEXT "Disable anti-aliasing when downscaling"
 #define SKIP_AA_LONGTEXT "This will result in moiré artifacts and nasty, jagged pixels when downscaling, except for some very limited special cases (e.g. bilinear downsampling to exactly 0.5x). Significantly speeds up downscaling with high downscaling ratios."
 
+#define OVERLAY_DIRECT_TEXT "Force GPU built-in sampling for overlay textures"
+#define OVERLAY_DIRECT_LONGTEXT "Normally, the configured up/downscalers will be used when overlay textures (such as subtitles) need to be scaled up or down. Enabling this option overrides this behavior and forces overlay textures to go through the GPU's built-in sampling instead (typically bilinear)."
+
 #define DISABLE_LINEAR_TEXT "Don't linearize before scaling"
 #define DISABLE_LINEAR_LONGTEXT "Normally, the image is converted to linear light before scaling (under certain conditions). Enabling this option disables this behavior."
 
@@ -1003,7 +1006,7 @@ vlc_module_begin () set_shortname (N_("Vulkan"))
     add_bool("skip-aa", false, SKIP_AA_TEXT, SKIP_AA_LONGTEXT, false)
     add_float_with_range("polar-cutoff", 0.001,
             0., 1., POLAR_CUTOFF_TEXT, POLAR_CUTOFF_LONGTEXT, false)
-    //add_bool("overlay-direct", false, OVERLAY_DIRECT_TEXT, OVERLAY_DIRECT_LONGTEXT, false) // TODO: implement overlay first
+    add_bool("overlay-direct", false, OVERLAY_DIRECT_TEXT, OVERLAY_DIRECT_LONGTEXT, false)
     add_bool("disable-linear", false, DISABLE_LINEAR_TEXT, DISABLE_LINEAR_LONGTEXT, false)
     add_bool("force-general", false, FORCE_GENERAL_TEXT, FORCE_GENERAL_LONGTEXT, false)
 
@@ -1064,6 +1067,7 @@ static void UpdateParams(vout_display_t *vd)
     sys->params.antiringing_strength = var_InheritFloat(vd, "antiringing");
     sys->params.skip_anti_aliasing = var_InheritBool(vd, "skip-aa");
     sys->params.polar_cutoff = var_InheritFloat(vd, "polar-cutoff");
+    sys->params.disable_overlay_sampling = var_InheritBool(vd, "overlay-direct");
     sys->params.disable_linear_scaling = var_InheritBool(vd, "disable-linear");
     sys->params.disable_builtin_scalers = var_InheritBool(vd, "force-general");
 
