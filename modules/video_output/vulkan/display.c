@@ -30,6 +30,7 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_vout_display.h>
+#include <vlc_fs.h>
 
 #include "../placebo_utils.h"
 #include "instance.h"
@@ -65,6 +66,10 @@ struct vout_display_sys_t
     struct pl_color_space target;
 #if PL_API_VER >= 13
     struct pl_peak_detect_params peak_detect;
+#endif
+#if PL_API_VER >= 58
+    const struct pl_hook *hook;
+    char *hook_path;
 #endif
     enum pl_chroma_location yuv_chroma_loc;
     int dither_depth;
@@ -169,6 +174,11 @@ static void Close(vout_display_t *vd)
         free(sys->overlays);
         free(sys->overlay_tex);
     }
+
+#if PL_API_VER >= 58
+    pl_mpv_user_shader_destroy(&sys->hook);
+    free(sys->hook_path);
+#endif
 
     pl_renderer_destroy(&sys->renderer);
 
@@ -359,6 +369,57 @@ static int Control(vout_display_t *vd, int query, va_list ap)
     return VLC_EGENERIC;
 }
 
+#if PL_API_VER >= 58
+
+static void load_user_shader(vout_display_sys_t *sys, const char *filepath)
+{
+    if (!filepath || !*filepath) {
+        pl_mpv_user_shader_destroy(&sys->hook);
+        return;
+    }
+
+    if (sys->hook_path && strcmp(filepath, sys->hook_path) == 0)
+        return; // same shader
+
+    const struct pl_gpu *gpu = sys->vk->vulkan->gpu;
+    char *shader_str = NULL;
+    FILE *fs = NULL;
+
+    free(sys->hook_path);
+    sys->hook_path = strdup(filepath);
+
+    fs = vlc_fopen(filepath, "rb");
+    int ret = fseek(fs, 0, SEEK_END);
+    if (ret == -1)
+        goto error;
+    long length = ftell(fs);
+    if (length == -1 || length >= 1024*1024) // 1 MB
+        goto error;
+    rewind(fs);
+
+    shader_str = vlc_alloc(length, sizeof(*shader_str));
+    if (!shader_str)
+        goto error;
+    ret = fread(shader_str, length, 1, fs);
+    if (ret != 1)
+        goto error;
+    sys->hook = pl_mpv_user_shader_parse(gpu, shader_str, length);
+    if (!sys->hook)
+        goto error;
+
+    fclose(fs);
+    free(shader_str);
+    return;
+
+error:
+    free(shader_str);
+    if (fs)
+        fclose(fs);
+    return;
+}
+
+#endif // PL_API_VER >= 58
+
 // Options
 
 #define VK_TEXT N_("Vulkan surface extension")
@@ -376,6 +437,11 @@ vlc_module_begin ()
     set_callback_display(Open, 0)
     add_shortcut ("vulkan", "vk")
     add_module ("vk", "vulkan", NULL, VK_TEXT, PROVIDER_LONGTEXT)
+
+#if PL_API_VER >= 58
+    set_section("Custom shaders", NULL)
+    add_loadfile("user-shader-file", NULL, USER_SHADER_FILE_TEXT, USER_SHADER_FILE_LONGTEXT)
+#endif
 
     set_section("Scaling", NULL)
     add_integer("upscaler-preset", SCALE_BUILTIN,
@@ -626,4 +692,14 @@ static void UpdateParams(vout_display_t *vd)
         .transfer = var_InheritInteger(vd, "target-trc"),
         .sig_avg = var_InheritFloat(vd, "target-avg"),
     };
+
+#if PL_API_VER >= 58
+    load_user_shader(sys, var_InheritString(vd, "user-shader-file"));
+    if (sys->hook) {
+        sys->params.hooks = &sys->hook;
+        sys->params.num_hooks = 1;
+    } else {
+        sys->params.num_hooks = 0;
+    }
+#endif
 }

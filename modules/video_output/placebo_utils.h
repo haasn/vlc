@@ -496,4 +496,7 @@ static const struct pl_filter_function *const filter_fun[] = {
 #define DELAYED_PEAK_TEXT "Allow delaying peak detection by up to one frame"
 #define DELAYED_PEAK_LONGTEXT "In some cases, peak detection may be more convenient to compute if the results are delayed by a frame. When this option is disabled, libplacebo will use an indirect buffer simply to force peak detection results to be up-to-date. Enabling it allows skipping this indirection in order to improve performance at the cost of some potentially noticeable brightness flickering immediately after a scene change."
 
+#define USER_SHADER_FILE_TEXT N_("Custom shader")
+#define USER_SHADER_FILE_LONGTEXT N_("Path to a file containing a custom user shader, in mpv .hook format.")
+
 #endif // VLC_PLACEBO_UTILS_H
