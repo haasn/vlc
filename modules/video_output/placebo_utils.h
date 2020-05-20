@@ -499,4 +499,19 @@ static const struct pl_filter_function *const filter_fun[] = {
 #define USER_SHADER_FILE_TEXT N_("Custom shader")
 #define USER_SHADER_FILE_LONGTEXT N_("Path to a file containing a custom user shader, in mpv .hook format.")
 
+#define FSRCNNX_TEXT N_("FSRCNNX x2 8-0-4-1")
+#define FSRCNNX_LONGTEXT N_("Neural network-based upscaler. Good at eliminating compression artifacts and sharpening lines, but fairly expensive and prone to ringing.")
+
+#define KRIG_BILATERAL_TEXT N_("KrigBilateral chroma scaler")
+#define KRIG_BILATERAL_LONGTEXT N_("Scales chroma by using the luma plane as a reference. Fairly cheap.")
+
+#define RAVU_R3_TEXT N_("RAVU r3")
+#define RAVU_R3_LONGTEXT N_("Raid and Accurate Video Upscaling (RAVU), inspired by RAISR. Edge-directed upscaler using weights trained on a database of anime files. Fairly cheap and good at avoiding ringing.")
+
+#define SSIM_DOWNSCALER_TEXT N_("SSimDownscaler")
+#define SSIM_DOWNSCALER_LONGTEXT N_("Tuned sharpening downscaler. It's recommended to use this with the \"Mitchell-Netravali\" downscaler and the \"Don't linearize before scaling\" option enabled.")
+
+#define SSIM_SUPER_RES_TEXT N_("SSimSuperRes")
+#define SSIM_SUPER_RES_LONGTEXT N_("Fast image sharpener, but prone to ringing.")
+
 #endif // VLC_PLACEBO_UTILS_H

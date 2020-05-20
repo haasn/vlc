@@ -13,7 +13,12 @@ VULKAN_COMMONSOURCES += dummy.cpp
 VULKAN_COMMONCFLAGS = $(VULKAN_CFLAGS) $(LIBPLACEBO_CFLAGS)
 VULKAN_COMMONLIBS = $(VULKAN_LIBS) $(LIBPLACEBO_LIBS)
 
-libvk_plugin_la_SOURCES = $(VULKAN_COMMONSOURCES) video_output/vulkan/display.c
+libvk_plugin_la_SOURCES = $(VULKAN_COMMONSOURCES) video_output/vulkan/display.c \
+			  video_output/vulkan/shaders/fsrcnnx_8_0_4_1.c \
+			  video_output/vulkan/shaders/krig_bilateral.c \
+			  video_output/vulkan/shaders/ravu_r3_compute.c \
+			  video_output/vulkan/shaders/ssim_downscaler.c \
+			  video_output/vulkan/shaders/ssim_super_res.c
 libvk_plugin_la_CFLAGS = $(AM_CFLAGS) $(VULKAN_COMMONCFLAGS)
 libvk_plugin_la_LIBADD = $(VULKAN_COMMONLIBS)
 

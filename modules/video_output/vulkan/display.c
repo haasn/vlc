@@ -34,6 +34,7 @@
 
 #include "../placebo_utils.h"
 #include "instance.h"
+#include "shaders/shaders.h"
 
 #include <libplacebo/renderer.h>
 #include <libplacebo/utils/upload.h>
@@ -68,7 +69,13 @@ struct vout_display_sys_t
     struct pl_peak_detect_params peak_detect;
 #endif
 #if PL_API_VER >= 58
-    const struct pl_hook *hook;
+    const struct pl_hook *enabled_hooks[8]; // storage for `params.hooks`
+    const struct pl_hook *fsrcnnx_hook;
+    const struct pl_hook *krig_bilateral_hook;
+    const struct pl_hook *ravu_r3_hook;
+    const struct pl_hook *ssim_downscaler_hook;
+    const struct pl_hook *ssim_super_res_hook;
+    const struct pl_hook *user_hook;
     char *hook_path;
 #endif
     enum pl_chroma_location yuv_chroma_loc;
@@ -149,6 +156,15 @@ static int Open(vout_display_t *vd, const vout_display_cfg_t *cfg,
     vd->control = Control;
     vd->close = Close;
 
+#if PL_API_VER >= 58
+    // Load all the shaders built in to VLC
+    sys->fsrcnnx_hook = pl_mpv_user_shader_parse(gpu, fsrcnnx_8_0_4_1, fsrcnnx_8_0_4_1_len);
+    sys->krig_bilateral_hook = pl_mpv_user_shader_parse(gpu, krig_bilateral, krig_bilateral_len);
+    sys->ravu_r3_hook = pl_mpv_user_shader_parse(gpu, ravu_r3_compute, ravu_r3_compute_len);
+    sys->ssim_downscaler_hook = pl_mpv_user_shader_parse(gpu, ssim_downscaler, ssim_downscaler_len);
+    sys->ssim_super_res_hook = pl_mpv_user_shader_parse(gpu, ssim_super_res, ssim_super_res_len);
+#endif
+
     UpdateParams(vd);
     (void) cfg; (void) context;
     return VLC_SUCCESS;
@@ -176,7 +192,12 @@ static void Close(vout_display_t *vd)
     }
 
 #if PL_API_VER >= 58
-    pl_mpv_user_shader_destroy(&sys->hook);
+    pl_mpv_user_shader_destroy(&sys->fsrcnnx_hook);
+    pl_mpv_user_shader_destroy(&sys->krig_bilateral_hook);
+    pl_mpv_user_shader_destroy(&sys->ravu_r3_hook);
+    pl_mpv_user_shader_destroy(&sys->ssim_downscaler_hook);
+    pl_mpv_user_shader_destroy(&sys->ssim_super_res_hook);
+    pl_mpv_user_shader_destroy(&sys->user_hook);
     free(sys->hook_path);
 #endif
 
@@ -374,7 +395,7 @@ static int Control(vout_display_t *vd, int query, va_list ap)
 static void load_user_shader(vout_display_sys_t *sys, const char *filepath)
 {
     if (!filepath || !*filepath) {
-        pl_mpv_user_shader_destroy(&sys->hook);
+        pl_mpv_user_shader_destroy(&sys->user_hook);
         return;
     }
 
@@ -403,8 +424,8 @@ static void load_user_shader(vout_display_sys_t *sys, const char *filepath)
     ret = fread(shader_str, length, 1, fs);
     if (ret != 1)
         goto error;
-    sys->hook = pl_mpv_user_shader_parse(gpu, shader_str, length);
-    if (!sys->hook)
+    sys->user_hook = pl_mpv_user_shader_parse(gpu, shader_str, length);
+    if (!sys->user_hook)
         goto error;
 
     fclose(fs);
@@ -440,6 +461,11 @@ vlc_module_begin ()
 
 #if PL_API_VER >= 58
     set_section("Custom shaders", NULL)
+    add_bool("fsrcnnx", false, FSRCNNX_TEXT, FSRCNNX_LONGTEXT, false)
+    add_bool("krig-bilateral", false, KRIG_BILATERAL_TEXT, KRIG_BILATERAL_LONGTEXT, false)
+    add_bool("ravu-r3", false, RAVU_R3_TEXT, RAVU_R3_LONGTEXT, false)
+    add_bool("ssim-downscaler", false, SSIM_DOWNSCALER_TEXT, SSIM_DOWNSCALER_LONGTEXT, false)
+    add_bool("ssim-super-res", false, SSIM_SUPER_RES_TEXT, SSIM_SUPER_RES_LONGTEXT, false)
     add_loadfile("user-shader-file", NULL, USER_SHADER_FILE_TEXT, USER_SHADER_FILE_LONGTEXT)
 #endif
 
@@ -694,12 +720,20 @@ static void UpdateParams(vout_display_t *vd)
     };
 
 #if PL_API_VER >= 58
+    sys->params.hooks = sys->enabled_hooks;
+    sys->params.num_hooks = 0;
+    if (var_InheritBool(vd, "fsrcnnx"))
+        sys->enabled_hooks[sys->params.num_hooks++] = sys->fsrcnnx_hook;
+    if (var_InheritBool(vd, "krig-bilateral"))
+        sys->enabled_hooks[sys->params.num_hooks++] = sys->krig_bilateral_hook;
+    if (var_InheritBool(vd, "ravu-r3"))
+        sys->enabled_hooks[sys->params.num_hooks++] = sys->ravu_r3_hook;
+    if (var_InheritBool(vd, "ssim-downscaler"))
+        sys->enabled_hooks[sys->params.num_hooks++] = sys->ssim_downscaler_hook;
+    if (var_InheritBool(vd, "ssim-super-res"))
+        sys->enabled_hooks[sys->params.num_hooks++] = sys->ssim_super_res_hook;
     load_user_shader(sys, var_InheritString(vd, "user-shader-file"));
-    if (sys->hook) {
-        sys->params.hooks = &sys->hook;
-        sys->params.num_hooks = 1;
-    } else {
-        sys->params.num_hooks = 0;
-    }
+    if (sys->user_hook)
+        sys->enabled_hooks[sys->params.num_hooks++] = sys->user_hook;
 #endif
 }
